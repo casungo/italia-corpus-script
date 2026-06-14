@@ -134,7 +134,7 @@ Orchestrates the conversion of a single collection directory.
 `convert_akn_dir_to_md()` walks all `.xml` files under the extracted ZIP directory in **natural sort order** (numeric path segments sorted as integers, so `art_2` comes before `art_10`). For each file it:
 
 1. Pre-parses the XML to derive the output filename from the document title before full rendering, so the `source_repo_path` (needed by `refs.py` for self-referential links) is known before writing.
-2. Calls `load_akn_file()` with the `urn_index` and the computed `source_repo_path`.
+2. Calls `akn_xml_to_markdown()` with the `urn_index` and the computed `source_repo_path`.
 3. Writes the resulting Markdown and immediately registers the new file's URN in the live `urn_index`, making it available to subsequent documents in the same collection.
 4. Appends a numeric suffix (`_2`, `_3`, …) on filename collisions.
 

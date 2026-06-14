@@ -210,12 +210,3 @@ def akn_xml_to_markdown(
     ctx = RefContext(urn_index=urn_index, source_repo_path=source_repo_path)
     body = body_to_markdown(root, ctx)
     return fm, format_frontmatter(fm) + body
-
-
-def load_akn_file(
-    path: Path,
-    urn_index: dict[str, str],
-    source_repo_path: str,
-) -> tuple[AknFrontmatter, str]:
-    content = path.read_text(encoding="utf-8", errors="replace")
-    return akn_xml_to_markdown(content, urn_index, source_repo_path)

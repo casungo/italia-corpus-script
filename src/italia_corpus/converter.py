@@ -1,9 +1,12 @@
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from .akn import extract_frontmatter, load_akn_file, parse_akn_xml
+from .akn import akn_xml_to_markdown, extract_frontmatter, parse_akn_xml
 from .config import logger
 from .filename import collection_subdir_name, fit_md_basename, safe_filename
+
+_ILLEGAL_XML10 = re.compile(rb"[\x00-\x08\x0B\x0C\x0E-\x1F]")
 
 
 def natural_sort_key(p: Path, base: Path) -> tuple:
@@ -42,10 +45,31 @@ def convert_akn_dir_to_md(
     count = 0
     skipped = 0
     for xml_file in xml_files:
+        content = xml_file.read_text(encoding="utf-8", errors="replace")
         try:
-            root = parse_akn_xml(
-                xml_file.read_text(encoding="utf-8", errors="replace")
+            root = parse_akn_xml(content)
+        except ET.ParseError:
+            raw = xml_file.read_bytes()
+            content = _ILLEGAL_XML10.sub(b"", raw).decode("utf-8", errors="replace")
+            logger.warning(
+                "[converter] Sanitizing illegal XML 1.0 bytes in %s", xml_file.name
             )
+            try:
+                root = parse_akn_xml(content)
+            except Exception as e:
+                logger.warning(
+                    "[converter] Failed to fix through sanitization, skipping %s: %s",
+                    xml_file.name,
+                    e,
+                )
+                skipped += 1
+                continue
+        except Exception as e:
+            logger.warning("[converter] Skipping %s: %s", xml_file.name, e)
+            skipped += 1
+            continue
+
+        try:
             fm_preview = extract_frontmatter(root)
         except Exception as e:
             logger.warning("[converter] Skipping %s: %s", xml_file.name, e)
@@ -58,7 +82,7 @@ def convert_akn_dir_to_md(
         source_repo_path = f"{collection_subdir}/{out_path.name}"
 
         try:
-            fm, markdown = load_akn_file(xml_file, urn_index, source_repo_path)
+            fm, markdown = akn_xml_to_markdown(content, urn_index, source_repo_path)
         except Exception as e:
             logger.warning("[converter] Skipping %s: %s", xml_file.name, e)
             skipped += 1
