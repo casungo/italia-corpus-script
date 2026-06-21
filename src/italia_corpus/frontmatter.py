@@ -56,13 +56,22 @@ def read_frontmatter(path: Path) -> dict[str, str]:
 def build_urn_index(repo_root: Path) -> dict[str, str]:
     """Scan repo for .md files and map URN → path relative to repo root."""
     urn_index: dict[str, str] = {}
-    for path in repo_root.rglob("*.md"):
+    for path in sorted(repo_root.rglob("*.md")):
         try:
             urn = read_frontmatter(path).get("urn")
         except (MissingFrontmatterError, ParseError):
             continue
         if urn:
-            urn_index[urn] = path.relative_to(repo_root).as_posix()
+            rel = path.relative_to(repo_root).as_posix()
+            if urn in urn_index and urn_index[urn] != rel:
+                logger.warning(
+                    "Duplicate URN %s: keeping %s, ignoring %s",
+                    urn,
+                    urn_index[urn],
+                    rel,
+                )
+            else:
+                urn_index[urn] = rel
     logger.info("Indexed %d URN(s) under %s", len(urn_index), repo_root)
     return urn_index
 
@@ -73,7 +82,7 @@ def update_urn_index_from_paths(
     paths: list[Path],
 ) -> None:
     """Add or refresh index entries for markdown files already under repo_root."""
-    for path in paths:
+    for path in sorted(paths):
         try:
             rel = path.relative_to(repo_root)
         except ValueError:

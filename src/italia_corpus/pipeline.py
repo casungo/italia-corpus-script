@@ -210,7 +210,7 @@ def extract_and_push(root_path: str, gh: Github) -> None:
                         update_urn_index_from_paths(
                             urn_index,
                             Path(clone_dir),
-                            list(dest_root.rglob("*.md")),
+                            sorted(dest_root.rglob("*.md")),
                         )
                     else:
                         logger.warning(
