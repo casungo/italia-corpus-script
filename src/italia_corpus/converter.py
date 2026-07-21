@@ -32,7 +32,7 @@ class Candidate:
     def repo_path(self) -> str:
         return f"atti/{self.metadata.codice_redazionale}.md"
 
-    def rank(self) -> tuple[int, int, int, str, str]:
+    def rank(self) -> tuple[int, int, str, str]:
         priorities = [
             value.strip().casefold()
             for value in os.getenv("CANONICAL_COLLECTION_PRIORITY", "Codici").split(",")
@@ -45,7 +45,6 @@ class Candidate:
         )
         return (
             _FORMAT_RANK.get(self.source_format, 9),
-            -self.source_articles,
             primary_rank,
             self.collection.casefold(),
             (self.source or self.xml_path.as_posix()).casefold(),
@@ -56,6 +55,8 @@ class Candidate:
 class ConversionError:
     source: str
     message: str
+    collection: str = "*"
+    metric: str = "conversion_error"
 
 
 @dataclass
@@ -75,6 +76,12 @@ class ConversionReport:
     hashes: dict[str, str] = field(default_factory=dict)
     document_articles: dict[str, int] = field(default_factory=dict)
     document_anchors: dict[str, list[str]] = field(default_factory=dict)
+    article_intervals: dict[str, list[dict[str, str | None]]] = field(default_factory=dict)
+    collections: dict[str, dict[str, int]] = field(default_factory=dict)
+
+    def increment(self, collection: str, metric: str, amount: int = 1) -> None:
+        counts = self.collections.setdefault(collection, {})
+        counts[metric] = counts.get(metric, 0) + amount
 
     def to_dict(self) -> dict:
         value = asdict(self)
@@ -99,6 +106,7 @@ def discover_candidate(
 ) -> Candidate | None:
     """Parse one XML candidate without materializing its collection on disk."""
     report.xml_received += 1
+    report.increment(collection, "xml_received")
     content = raw.decode("utf-8", errors="replace")
     xml_bytes = raw
     try:
@@ -146,7 +154,8 @@ def discover_candidate(
         )
     except Exception as exc:
         report.skipped += 1
-        report.errors.append(ConversionError(source, str(exc)))
+        report.increment(collection, "skipped")
+        report.errors.append(ConversionError(source, str(exc), collection, "invalid_xml"))
         return None
 
 
@@ -181,7 +190,8 @@ def select_canonical(candidates: list[Candidate], report: ConversionReport) -> l
         sources = " <> ".join(candidate.source or str(candidate.xml_path) for candidate in group)
         urns = " and ".join(sorted({candidate.metadata.urn or "" for candidate in group}))
         report.errors.append(ConversionError(
-            f"{code}: {sources}", f"editorial code maps to {urns}"
+            f"{code}: {sources}", f"editorial code maps to {urns}",
+            "*", "editorial_code_collision",
         ))
 
     for candidate in candidates:
@@ -208,7 +218,9 @@ def render_candidates(candidates: list[Candidate], output: Path, report: Convers
                 raise ValueError("empty rendered document")
             target.write_text(markdown, encoding="utf-8", newline="\n")
             report.converted += 1
+            report.increment(candidate.collection, "converted")
             report.articles += stats.articles
+            report.increment(candidate.collection, "articles", stats.articles)
             report.internal_links += stats.internal_links
             report.external_links += stats.external_links
             report.unresolved_links += stats.unresolved_links
@@ -218,11 +230,15 @@ def render_candidates(candidates: list[Candidate], output: Path, report: Convers
             report.document_anchors[candidate.repo_path] = re.findall(
                 r'<a id="([^"]+)"', markdown
             )
+            report.article_intervals[candidate.repo_path] = stats.article_intervals
             report.urns += bool(fm.urn)
             report.editorial_codes += bool(fm.codice_redazionale)
         except Exception as exc:
             report.skipped += 1
-            report.errors.append(ConversionError(str(candidate.xml_path), str(exc)))
+            report.increment(candidate.collection, "skipped")
+            report.errors.append(ConversionError(
+                str(candidate.xml_path), str(exc), candidate.collection, "render_error"
+            ))
     return urn_index
 
 

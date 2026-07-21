@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import sqlite3
 import stat
@@ -15,7 +16,7 @@ from zipfile import ZipFile, ZipInfo
 
 from .converter import Candidate, ConversionReport
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class QualityGateError(RuntimeError):
@@ -50,24 +51,49 @@ def safe_extract_zip(zf: ZipFile, destination: Path) -> None:
                 shutil.copyfileobj(source, dest)
 
 
-def _allowed_regressions(path: Path | None) -> dict[str, dict]:
+def _allowed_regressions(path: Path | None) -> list[dict]:
     if not path or not path.exists():
-        return {}
+        return []
     rows = json.loads(path.read_text(encoding="utf-8"))
     today = date.today().isoformat()
-    return {
-        row["metric"]: row for row in rows
-        if row.get("reason") and row.get("expires", "") >= today
-    }
+    return [row for row in rows if row.get("reason") and row.get("expires", "") >= today]
+
+
+def _is_allowed(rows: list[dict], metric: str, collection: str, actual: int) -> bool:
+    return any(
+        row.get("metric") == metric
+        and row.get("collection") == collection
+        and row.get("expected_value") == actual
+        for row in rows
+    )
+
+
+def _error_is_allowed(rows: list[dict], metric: str, collection: str, source: str) -> bool:
+    return any(
+        row.get("metric") == metric
+        and row.get("collection") == collection
+        and isinstance(row.get("expected_value"), list)
+        and any(str(value) in source for value in row["expected_value"])
+        for row in rows
+    )
 
 
 def validate_report(report: ConversionReport, previous: dict | None = None,
                     exceptions_path: Path | None = None) -> None:
     allowed = _allowed_regressions(exceptions_path)
     failures: list[str] = []
-    if report.skipped or report.errors:
-        failures.append(f"{report.skipped} XML skipped, {len(report.errors)} errors")
-        failures.extend(f"{error.source}: {error.message}" for error in report.errors[:20])
+    unallowed = [
+        error for error in report.errors
+        if not _error_is_allowed(allowed, error.metric, error.collection, error.source)
+    ]
+    accounted_skips = sum(
+        1 for error in report.errors if error.metric in {"invalid_xml", "render_error"}
+    )
+    if report.skipped > accounted_skips:
+        failures.append(f"{report.skipped - accounted_skips} skipped XML lack an error record")
+    if unallowed:
+        failures.append(f"{report.skipped} XML skipped, {len(unallowed)} unexcepted errors")
+        failures.extend(f"{error.source}: {error.message}" for error in unallowed[:20])
     if report.converted != report.urns or report.converted != report.editorial_codes:
         failures.append("not every document has one URN and editorial code")
     if report.converted == 0:
@@ -80,14 +106,27 @@ def validate_report(report: ConversionReport, previous: dict | None = None,
             "internal_links": (report.internal_links, int(old.get("internal_links", 0))),
         }
         for metric, (new, prior) in checks.items():
-            if new < prior and metric not in allowed:
+            if new < prior and not _is_allowed(allowed, metric, "*", new):
                 failures.append(f"{metric} regressed from {prior} to {new}")
         prior_external = int(old.get("external_links", 0))
-        if report.external_links > prior_external and "external_links" not in allowed:
+        if report.external_links > prior_external and not _is_allowed(
+            allowed, "external_links", "*", report.external_links
+        ):
             failures.append(f"external_links increased from {prior_external} to {report.external_links}")
         for path, digest in previous.get("files", {}).items():
-            if path not in report.hashes and "removed_files" not in allowed:
+            if path not in report.hashes and not _is_allowed(allowed, "removed_files", "*", 1):
                 failures.append(f"previous document disappeared: {path} ({digest[:12]})")
+        for collection, counts in previous.get("by_collection", {}).items():
+            current = report.collections.get(collection, {})
+            for metric in ("xml_received", "converted", "articles"):
+                old_value = int(counts.get(metric, 0))
+                new_value = int(current.get(metric, 0))
+                if new_value < old_value and not _is_allowed(
+                    allowed, metric, collection, new_value
+                ):
+                    failures.append(
+                        f"{collection}.{metric} regressed from {old_value} to {new_value}"
+                    )
     if failures:
         raise QualityGateError("quality gate failed:\n- " + "\n- ".join(failures))
 
@@ -120,6 +159,7 @@ def write_indexes(output: Path, candidates: list[Candidate], report: ConversionR
     type_counts: Counter[str] = Counter()
     year_counts: Counter[str] = Counter()
     urn_index: dict[str, dict[str, str]] = {}
+    code_index: dict[str, dict[str, str]] = {}
     for candidate in candidates:
         urn = candidate.metadata.urn or ""
         memberships.setdefault(candidate.collection, set()).add(urn)
@@ -128,6 +168,10 @@ def write_indexes(output: Path, candidates: list[Candidate], report: ConversionR
         urn_index[urn] = {
             "path": candidate.repo_path,
             "codice_redazionale": candidate.metadata.codice_redazionale or "",
+        }
+        code_index[candidate.metadata.codice_redazionale or ""] = {
+            "path": candidate.repo_path,
+            "urn": urn,
         }
     collections_dir = output / "collections"
     collections_dir.mkdir(exist_ok=True)
@@ -138,7 +182,8 @@ def write_indexes(output: Path, candidates: list[Candidate], report: ConversionR
                        ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
     (output / "urn-index.json").write_text(
-        json.dumps({"schema_version": SCHEMA_VERSION, "documents": urn_index},
+        json.dumps({"schema_version": SCHEMA_VERSION, "documents": urn_index,
+                    "by_codice_redazionale": code_index},
                    ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     manifest = {
@@ -156,6 +201,7 @@ def write_indexes(output: Path, candidates: list[Candidate], report: ConversionR
         },
         "by_type": dict(sorted(type_counts.items())),
         "by_year": dict(sorted(year_counts.items())),
+        "by_collection": dict(sorted(report.collections.items())),
         "errors": [vars(error) for error in report.errors],
         "unsupported_tags": sorted(report.unsupported_tags),
         "known_gaps": known_gaps or [],
@@ -198,6 +244,12 @@ def build_sqlite(snapshot: Path, destination: Path) -> None:
             );
             CREATE INDEX documents_filters ON documents(tipo, data, stato_atto, valid_from, valid_to);
             CREATE VIRTUAL TABLE documents_fts USING fts5(urn UNINDEXED, titolo, text);
+            CREATE TABLE articles (
+              document_urn TEXT NOT NULL REFERENCES documents(urn), anchor TEXT NOT NULL,
+              version INTEGER NOT NULL, valid_from TEXT, valid_to TEXT, text TEXT NOT NULL,
+              PRIMARY KEY (document_urn, anchor, version)
+            );
+            CREATE INDEX articles_validity ON articles(document_urn, valid_from, valid_to);
         """)
         from .frontmatter import read_frontmatter
         for path in sorted((snapshot / "atti").glob("*.md")):
@@ -212,6 +264,19 @@ def build_sqlite(snapshot: Path, destination: Path) -> None:
             )
             connection.execute("INSERT INTO documents VALUES (?,?,?,?,?,?,?,?,?,?)", row)
             connection.execute("INSERT INTO documents_fts VALUES (?,?,?)", (row[0], row[4], body))
+            matches = list(re.finditer(
+                r'<a id="([^"]+)" data-akn-name="article"(?: data-valid-from="([^"]+)")?'
+                r'(?: data-valid-to="([^"]+)")?></a>\n(?=#+ )', body
+            ))
+            versions: Counter[str] = Counter()
+            for index, match in enumerate(matches):
+                end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+                article_text = body[match.end():end].strip()
+                versions[match[1]] += 1
+                connection.execute(
+                    "INSERT INTO articles VALUES (?,?,?,?,?,?)",
+                    (row[0], match[1], versions[match[1]], match[2], match[3], article_text),
+                )
         connection.commit()
     finally:
         connection.close()
@@ -258,7 +323,12 @@ def build_artifacts(snapshot: Path, artifacts: Path) -> list[Path]:
     with jsonl.open("rb") as source, jsonl_zst.open("wb") as destination:
         compressor.copy_stream(source, destination)
     outputs.append(jsonl_zst)
-    table = pajson.read_json(jsonl)
+    with jsonl.open("rb") as stream:
+        longest_record = max(map(len, stream), default=0)
+    table = pajson.read_json(
+        jsonl,
+        read_options=pajson.ReadOptions(block_size=max(1 << 20, longest_record + 1)),
+    )
     parquet_path = artifacts / "corpus.parquet"
     parquet.write_table(table, parquet_path, compression="zstd")
     outputs.append(parquet_path)
@@ -275,3 +345,30 @@ def build_artifacts(snapshot: Path, artifacts: Path) -> list[Path]:
         f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n" for path in outputs
     ), encoding="ascii")
     return outputs + [sums]
+
+
+def build_legacy_archive(repository: Path, legacy_dirs: list[str], artifacts: Path) -> Path | None:
+    """Archive legacy collection directories once, before the atomic snapshot replaces them."""
+    sources = [repository / name for name in legacy_dirs if (repository / name).is_dir()]
+    if not sources:
+        return None
+    import zstandard
+
+    tar_path = artifacts / "legacy-corpus.tar"
+    with tarfile.open(tar_path, "w") as archive:
+        for source in sorted(sources):
+            for path in sorted(source.rglob("*")):
+                if path.is_file():
+                    relative = path.relative_to(repository).as_posix()
+                    info = archive.gettarinfo(str(path), relative)
+                    info.mtime = 0
+                    with path.open("rb") as stream:
+                        archive.addfile(info, stream)
+    destination = artifacts / "legacy-corpus.tar.zst"
+    with tar_path.open("rb") as input_stream, destination.open("wb") as output_stream:
+        zstandard.ZstdCompressor(level=10, threads=0).copy_stream(input_stream, output_stream)
+    tar_path.unlink()
+    sums = artifacts / "SHA256SUMS"
+    with sums.open("a", encoding="ascii") as stream:
+        stream.write(f"{hashlib.sha256(destination.read_bytes()).hexdigest()}  {destination.name}\n")
+    return destination

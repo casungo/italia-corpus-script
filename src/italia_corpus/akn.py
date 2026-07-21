@@ -40,6 +40,7 @@ class RenderStats:
     external_links: int = 0
     unresolved_links: int = 0
     unsupported_tags: set[str] = field(default_factory=set)
+    article_intervals: list[dict[str, str | None]] = field(default_factory=list)
 
 
 def _local(tag: str) -> str:
@@ -103,7 +104,7 @@ def extract_frontmatter(root: ET.Element, source_format: str = "V") -> AknFrontm
 
 def format_frontmatter(fm: AknFrontmatter) -> str:
     values: list[tuple[str, str | bool | None]] = [
-        ("schema_version", "2"), ("tipo", fm.tipo), ("numero", fm.numero),
+        ("schema_version", "3"), ("tipo", fm.tipo), ("numero", fm.numero),
         ("data", fm.data), ("titolo", fm.titolo), ("urn", fm.urn),
         ("codice_redazionale", fm.codice_redazionale),
         ("stato_atto", fm.stato_atto), ("versione_data", fm.versione_data),
@@ -139,12 +140,40 @@ def _anchor(el: ET.Element, ancestors: tuple[str, ...]) -> str:
     return "-".join((*ancestors, names.get(_local(el.tag), _local(el.tag)), _slug(num)))
 
 
-def _anchor_tag(el: ET.Element, anchor: str) -> str:
+def _temporal_intervals(root: ET.Element) -> dict[str, tuple[str | None, str | None]]:
+    events = {
+        (event.get("eId") or event.get("id") or "").lstrip("#"): event.get("date")
+        for event in root.findall(".//akn:meta/akn:lifecycle//akn:eventRef", NS)
+    }
+    intervals: dict[str, tuple[str | None, str | None]] = {}
+    for interval in root.findall(".//akn:meta/akn:temporalData//akn:timeInterval", NS):
+        identifier = (interval.get("eId") or interval.get("id") or "").lstrip("#")
+        start = (interval.get("start") or "").lstrip("#")
+        end = (interval.get("end") or "").lstrip("#")
+        if identifier:
+            intervals[identifier] = (events.get(start, start or None), events.get(end, end or None))
+    return intervals
+
+
+def _validity(el: ET.Element, intervals: dict[str, tuple[str | None, str | None]]) -> tuple[str | None, str | None]:
+    period = (el.get("period") or "").lstrip("#")
+    if period in intervals:
+        return intervals[period]
+    return (
+        (el.get("start") or el.get("periodStart") or "").lstrip("#") or None,
+        (el.get("end") or el.get("periodEnd") or "").lstrip("#") or None,
+    )
+
+
+def _anchor_tag(anchor: str, valid_from: str | None, valid_to: str | None,
+                element_name: str) -> str:
     attributes = [f'id="{anchor}"']
-    if valid_from := el.get("start") or el.get("periodStart"):
-        attributes.append(f'data-valid-from="{valid_from.lstrip("#")}"')
-    if valid_to := el.get("end") or el.get("periodEnd"):
-        attributes.append(f'data-valid-to="{valid_to.lstrip("#")}"')
+    if element_name == "article":
+        attributes.append('data-akn-name="article"')
+    if valid_from:
+        attributes.append(f'data-valid-from="{valid_from}"')
+    if valid_to:
+        attributes.append(f'data-valid-to="{valid_to}"')
     return f"<a {' '.join(attributes)}></a>"
 
 
@@ -193,7 +222,8 @@ def _render_table(el: ET.Element, lines: list[str], ctx: RefContext, stats: Rend
 
 
 def _render_block(el: ET.Element, lines: list[str], ctx: RefContext, stats: RenderStats,
-                  level: int = 2, ancestors: tuple[str, ...] = ()) -> None:
+                  level: int = 2, ancestors: tuple[str, ...] = (),
+                  intervals: dict[str, tuple[str | None, str | None]] | None = None) -> None:
     tag = _local(el.tag)
     if tag in _IGNORED:
         return
@@ -202,16 +232,20 @@ def _render_block(el: ET.Element, lines: list[str], ctx: RefContext, stats: Rend
         return
     if tag in _HEADINGS:
         anchor = _anchor(el, ancestors)
+        valid_from, valid_to = _validity(el, intervals or {})
         num = _text(el.find(f"{{{AKN_NS}}}num"))
         heading = _text(el.find(f"{{{AKN_NS}}}heading"))
         title = " — ".join(x for x in (num, heading) if x)
         if title:
-            lines.extend([_anchor_tag(el, anchor), f"{'#' * min(level, 6)} {title}", ""])
+            lines.extend([_anchor_tag(anchor, valid_from, valid_to, tag), f"{'#' * min(level, 6)} {title}", ""])
         if tag == "article":
             stats.articles += 1
+            stats.article_intervals.append(
+                {"anchor": anchor, "valid_from": valid_from, "valid_to": valid_to}
+            )
         for child in el:
             if _local(child.tag) not in {"num", "heading"}:
-                _render_block(child, lines, ctx, stats, level + 1, (*ancestors, anchor))
+                _render_block(child, lines, ctx, stats, level + 1, (*ancestors, anchor), intervals)
         return
     if tag == "p":
         text = _render_inline(el, ctx, stats)
@@ -228,7 +262,7 @@ def _render_block(el: ET.Element, lines: list[str], ctx: RefContext, stats: Rend
     children = list(el)
     if children:
         for child in children:
-            _render_block(child, lines, ctx, stats, level, ancestors)
+            _render_block(child, lines, ctx, stats, level, ancestors, intervals)
     else:
         text = (el.text or "").strip()
         if text:
@@ -238,10 +272,11 @@ def _render_block(el: ET.Element, lines: list[str], ctx: RefContext, stats: Rend
 def body_to_markdown(root: ET.Element, ctx: RefContext) -> tuple[str, RenderStats]:
     lines: list[str] = []
     stats = RenderStats()
+    intervals = _temporal_intervals(root)
     document = next((child for child in root if _local(child.tag) in {"act", "doc"}), root)
     for child in document:
         if _local(child.tag) not in {"meta", "preface"}:
-            _render_block(child, lines, ctx, stats)
+            _render_block(child, lines, ctx, stats, intervals=intervals)
     while lines and not lines[-1].strip():
         lines.pop()
     return "\n".join(lines), stats

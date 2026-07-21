@@ -10,6 +10,8 @@ import sys
 import urllib.request
 from pathlib import Path
 
+from .snapshot import SCHEMA_VERSION
+
 DEFAULT_REPO = "ahmeabd/italia-corpus"
 
 
@@ -27,7 +29,16 @@ def _connect(path: Path) -> sqlite3.Connection:
 
 def _get(args: argparse.Namespace) -> int:
     with _connect(args.database) as db:
-        row = db.execute("SELECT * FROM documents WHERE urn = ?", (args.urn,)).fetchone()
+        if args.article:
+            sql = "SELECT * FROM articles WHERE document_urn = ? AND anchor = ?"
+            values: list[str] = [args.urn, args.article]
+            if args.vigente_al:
+                sql += " AND (valid_from IS NULL OR valid_from <= ?) AND (valid_to IS NULL OR valid_to > ?)"
+                values.extend([args.vigente_al, args.vigente_al])
+            sql += " ORDER BY COALESCE(valid_from, '') DESC, version DESC LIMIT 1"
+            row = db.execute(sql, values).fetchone()
+        else:
+            row = db.execute("SELECT * FROM documents WHERE urn = ?", (args.urn,)).fetchone()
     if not row:
         return 1
     value = dict(row)
@@ -62,13 +73,53 @@ def _verify(args: argparse.Namespace) -> int:
         failures.append("SHA256SUMS missing")
     else:
         for line in sums.read_text(encoding="ascii").splitlines():
-            digest, name = line.split("  ", 1)
-            path = root / name
-            if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
-                failures.append(name)
+            try:
+                digest, name = line.split("  ", 1)
+                path = root / name
+                if Path(name).name != name or len(digest) != 64:
+                    raise ValueError
+                if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+                    failures.append(f"checksum: {name}")
+            except ValueError:
+                failures.append(f"malformed checksum line: {line}")
     manifest = root / "manifest.json"
-    if not manifest.is_file() or json.loads(manifest.read_text()).get("schema_version") != 2:
+    index_path = root / "urn-index.json"
+    database = root / "corpus.sqlite"
+    if not manifest.is_file():
         failures.append("manifest schema")
+    else:
+        manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
+        if manifest_data.get("schema_version") != SCHEMA_VERSION:
+            failures.append("manifest schema")
+    if not index_path.is_file():
+        failures.append("urn-index.json missing")
+    else:
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        documents = index.get("documents", {})
+        codes = index.get("by_codice_redazionale", {})
+        if index.get("schema_version") != SCHEMA_VERSION:
+            failures.append("urn index schema")
+        for urn, document in documents.items():
+            code = document.get("codice_redazionale")
+            if not code or codes.get(code) != {"path": document.get("path"), "urn": urn}:
+                failures.append(f"index reference: {urn}")
+    if not database.is_file():
+        failures.append("corpus.sqlite missing")
+    elif manifest.is_file() and index_path.is_file():
+        with sqlite3.connect(database) as db:
+            integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
+            foreign_keys = db.execute("PRAGMA foreign_key_check").fetchall()
+            count = db.execute("SELECT count(*) FROM documents").fetchone()[0]
+            article_count = db.execute("SELECT count(*) FROM articles").fetchone()[0]
+            urns = {row[0] for row in db.execute("SELECT urn FROM documents")}
+        if integrity != "ok":
+            failures.append(f"SQLite integrity: {integrity}")
+        if foreign_keys:
+            failures.append("SQLite foreign keys")
+        if count != manifest_data.get("counts", {}).get("acts") or urns != set(documents):
+            failures.append("SQLite document count/references")
+        if article_count != manifest_data.get("counts", {}).get("articles"):
+            failures.append("SQLite article count")
     _print({"ok": not failures, "failures": failures}, True)
     return 1 if failures else 0
 
@@ -94,6 +145,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     get = sub.add_parser("get")
     get.add_argument("--urn", required=True)
+    get.add_argument("--article", help="stable article anchor, for example art-575")
+    get.add_argument("--vigente-al", help="return the article only if valid on YYYY-MM-DD")
     get.add_argument("--database", type=Path, default=Path("corpus.sqlite"))
     get.set_defaults(handler=_get)
     search = sub.add_parser("search")
