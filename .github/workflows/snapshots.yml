@@ -1,0 +1,43 @@
+name: Corpus snapshots
+on:
+  schedule:
+    - cron: "17 3 * * *"
+    - cron: "41 2 1 * *"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the validated snapshot
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: corpus-snapshot
+  cancel-in-progress: false
+jobs:
+  daily-smoke:
+    if: github.event_name == 'schedule' && github.event.schedule == '17 3 * * *'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install -e .
+      - run: italia-corpus-pipeline --dry-run --smoke-test "${RUNNER_TEMP}/italia-corpus"
+  monthly-snapshot:
+    if: (github.event_name == 'schedule' && github.event.schedule == '41 2 1 * *') || (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install -e .
+      - run: italia-corpus-pipeline "${RUNNER_TEMP}/italia-corpus"
+        env:
+          GITHUB_TOKEN: ${{ secrets.CORPUS_PUBLISH_TOKEN }}
+          GITHUB_USERNAME: ahmeabd
+          GITHUB_TARGET_REPO: italia-corpus

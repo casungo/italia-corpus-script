@@ -13,16 +13,16 @@ Ogni esecuzione completa tutte le collezioni prima di modificare il repository:
 5. genera manifest, indici, delta e artifact;
 6. applica i quality gate e pubblica un solo commit, tag e release.
 
-XML scartati, metadati obbligatori mancanti, documenti scomparsi, regressioni nei conteggi o nei link interrompono la pubblicazione. Le eccezioni intenzionali devono essere registrate in `quality-exceptions.json` con `metric`, `reason` ed `expires`.
+XML scartati, metadati obbligatori mancanti, documenti scomparsi, regressioni nei conteggi o nei link interrompono la pubblicazione. Le eccezioni intenzionali devono essere registrate in `quality-exceptions.json` con `metric`, `collection`, `expected_value`, `reason` ed `expires`: un valore diverso resta fail-closed.
 
 Gli atti fondamentali segnalati nelle issue #2 e #3 hanno gate dedicati. Se DPR 380/2001, DPR 151/2011 o D.Lgs. 152/2006 non arrivano dalle collezioni, vengono acquisiti dal testo vigente Normattiva. Le NTC 2018 (`18A00716`) vengono estratte dal PDF ufficiale della Gazzetta e marcate come testo originario, non consolidato con il decreto modificativo del 2023.
 
 ## Formato
 
-Il frontmatter v2 espone lo stato temporale senza fingere precisione a livello di articolo:
+Il frontmatter v3 espone lo stato temporale dell'atto e gli articoli riportano intervalli risolti:
 
 ```yaml
-schema_version: 2
+schema_version: 3
 urn: urn:nir:stato:decreto.legislativo:2003-06-30;196
 codice_redazionale: 003G0218
 stato_atto: vigente
@@ -33,7 +33,7 @@ fonte_versione: vigente
 vigente: true # compatibilità, deprecato
 ```
 
-`manifest.json` è la fonte dei conteggi pubblici. `collections/*.json` descrive l'appartenenza logica alle collezioni; `urn-index.json` risolve URN e codice redazionale verso il percorso canonico.
+`manifest.json` è la fonte dei conteggi pubblici, inclusi quelli in `by_collection`. `collections/*.json` descrive l'appartenenza logica alle collezioni; `urn-index.json` risolve sia URN sia codice redazionale verso il percorso canonico. `corpus.sqlite` espone gli intervalli interrogabili nella tabella `articles`.
 
 ## Artifact della release
 
@@ -56,13 +56,21 @@ cp .env.example .env
 italia-corpus-pipeline /percorso/con-spazio-sufficiente
 italia-corpus-pipeline --dry-run --baseline /percorso/snapshot-precedente /percorso/con-spazio-sufficiente
 italia-corpus-pipeline --dry-run --smoke-test /percorso/con-spazio-sufficiente
+italia-corpus-pipeline --dry-run --download-cache /percorso/cache /percorso/con-spazio-sufficiente
 ```
 
 Variabili obbligatorie: `GITHUB_USERNAME`, `GITHUB_TARGET_REPO` e un token tra `GITHUB_TOKEN_1` … `GITHUB_TOKEN_20` o `GITHUB_TOKEN`. Il token viene passato a Git tramite configurazione di processo e non viene inserito nel clone URL.
 
 Con `--dry-run` la pipeline non inizializza GitHub e non crea commit, tag o release. Snapshot e artifact restano nella directory `italia-corpus-dry-run-*` stampata a fine esecuzione; `--baseline` abilita i controlli di regressione contro un manifest precedente.
 
-`--smoke-test` prova tutte le collezioni disponibili, ma converte al massimo i primi 1.000 XML di ciascun archivio. Le collezioni che rispondono con un archivio vuoto vengono registrate e saltate. Verifica conversione, manifest e artifact senza applicare i gate di copertura che richiedono il corpus completo.
+`--smoke-test` prova tutte le collezioni disponibili in modalità fail-closed, ma converte al massimo i primi 1.000 XML di ciascun archivio. Anche un archivio vuoto interrompe l'esecuzione. Verifica conversione, manifest e artifact senza applicare i gate di copertura che richiedono il corpus completo.
+
+Gli ZIP validi vengono conservati per nome, formato e `dataCreazione` upstream. Ogni archivio ha
+un checksum SHA-256 ed è registrato in `inventory.json`; prima del riuso vengono verificati
+checksum, inventario e CRC di tutti i membri. Un retry dello stesso snapshot riusa quindi solo
+pacchetti integri della medesima edizione; `--download-cache` permette di collocare esplicitamente
+questa cache fuori dalla directory di lavoro. I log riportano avanzamento per collezione, formato
+effettivo, cache hit/miss, XML letti e tempi.
 
 ## CLI per gli utenti
 
@@ -70,6 +78,7 @@ Con `--dry-run` la pipeline non inizializza GitHub e non crea commit, tag o rele
 italia-corpus download
 italia-corpus verify
 italia-corpus get --urn 'urn:nir:stato:decreto.legislativo:2003-06-30;196'
+italia-corpus get --urn 'urn:nir:stato:regio.decreto:1930-10-19;1398' --article art-575 --vigente-al 2024-01-01
 italia-corpus search 'protezione dati' --vigente-al 2024-01-01
 ```
 
@@ -83,4 +92,4 @@ python -m ruff check .
 python -m mypy
 ```
 
-La CI esegue parser, golden test, sicurezza ZIP, riproducibilità, manifest, SQLite e controlli statici su Linux e Windows, oltre all'audit delle dipendenze.
+La CI esegue parser, golden multi-collezione, sicurezza ZIP, riproducibilità, manifest, SQLite e controlli statici su Linux e Windows, oltre ad audit delle dipendenze e secret scanning. Il workflow snapshot esegue uno smoke globale giornaliero e una pubblicazione completa mensile; il rollout v3 e la transizione dal layout legacy sono descritti in `docs/rollout.md`.
