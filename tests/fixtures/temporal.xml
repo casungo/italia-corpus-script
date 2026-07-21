@@ -1,0 +1,24 @@
+<akomaNtoso xmlns="http://docs.oasis-open.org/legaldocml/ns/akn/3.0"
+  xmlns:eli="http://data.europa.eu/eli/ontology#">
+  <act>
+    <meta>
+      <identification><FRBRWork><FRBRalias name="urn:nir" value="urn:nir:stato:legge:2020-01-01;9"/></FRBRWork></identification>
+      <lifecycle>
+        <eventRef eId="start-v1" date="2020-01-01" type="generation"/>
+        <eventRef eId="end-v1" date="2022-01-01" type="amendment"/>
+        <eventRef eId="start-v2" date="2022-01-01" type="amendment"/>
+      </lifecycle>
+      <temporalData>
+        <timeInterval eId="v1" start="#start-v1" end="#end-v1"/>
+        <timeInterval eId="v2" start="#start-v2"/>
+      </temporalData>
+      <proprietary><eli:id_local>020G0009</eli:id_local></proprietary>
+    </meta>
+    <preface><docType>Legge</docType><docNumber>9</docNumber><docDate date="2020-01-01"/><docTitle>Test temporale</docTitle></preface>
+    <body>
+      <article eId="art_1" period="#v1"><num>Art. 1</num><paragraph><num>1.</num><content><p><del>Testo abrogato.</del></p></content></paragraph></article>
+      <article eId="art_1_v2" period="#v2"><num>Art. 1</num><paragraph><num>1.</num><content><blockList><item><p>Livello uno</p><blockList><item><p>Livello due</p><blockList><item><p>Livello tre</p></item></blockList></item></blockList></item></blockList></content></paragraph></article>
+    </body>
+    <attachments><attachment><doc><body><article eId="annex_art_1"><num>Allegato 1</num><paragraph><content><p>Contenuto allegato.</p></content></paragraph></article></body></doc></attachment></attachments>
+  </act>
+</akomaNtoso>
