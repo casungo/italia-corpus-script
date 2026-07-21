@@ -1,9 +1,13 @@
-import errno
-import os
-import random
+"""Fail-closed, all-collections snapshot pipeline."""
+
+from __future__ import annotations
+
+import hashlib
+import json
 import shutil
 import tempfile
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -11,231 +15,229 @@ import requests
 from github import Github
 
 from .config import (
-    DOWNLOAD_MAX_ATTEMPTS,
-    DOWNLOAD_RETRY_SLEEP_SEC,
-    DOWNLOAD_TIMEOUT,
-    ENDPOINT_URL,
-    GIT_AUTHOR_EMAIL,
-    GIT_AUTHOR_NAME,
-    GITHUB_USERNAME,
-    TARGET_REPO_NAME,
-    logger,
+    DOWNLOAD_MAX_ATTEMPTS, DOWNLOAD_RETRY_SLEEP_SEC, DOWNLOAD_TIMEOUT, ENDPOINT_URL,
+    GIT_AUTHOR_EMAIL, GIT_AUTHOR_NAME, GITHUB_USERNAME, TARGET_REPO_NAME, logger,
 )
-from .converter import convert_akn_dir_to_md
+from .converter import (
+    Candidate, ConversionReport, discover_candidate, discover_candidates, render_candidates,
+    select_canonical,
+)
 from .filename import collection_subdir_name, safe_repo_name
-from .frontmatter import build_urn_index, update_urn_index_from_paths
-from .git_ops import git, sync_collection_to_clone
-from .github_client import get_or_create_repo, primary_token
-from .normattiva import (
-    collection_download_params,
-    fetch_predefined_collections,
-    merge_collections_by_name,
+from .git_ops import git, push_snapshot, rollback_snapshot, stage_snapshot
+from .github_client import get_or_create_repo
+from .normattiva import collection_download_params, fetch_predefined_collections, merge_collections_by_name
+from .snapshot import (
+    build_artifacts, safe_zip_members, validate_report, validate_required_coverage,
+    write_delta, write_indexes,
 )
+from .supplemental import fetch_missing_sources
 
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/zip,application/octet-stream,*/*",
-    "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Referer": "https://www.normattiva.it/",
+    "User-Agent": "italia-corpus/2 (+https://github.com/ahmeabd/italia-corpus-script)",
+    "Accept": "application/zip,application/octet-stream",
 }
+SMOKE_XML_PER_COLLECTION = 1_000
 
 
-def extract_and_push(root_path: str, gh: Github) -> None:
-    """Main pipeline: fetch collections, download ZIPs, convert XML to MD, push to GitHub."""
-    os.makedirs(root_path, exist_ok=True)
-    raw = fetch_predefined_collections()
-    collections = merge_collections_by_name(raw)
-    logger.info("Processing %d unique collection(s)", len(collections))
+def _download(params: dict, destination: Path, *, allow_empty: bool = False) -> bool:
+    last_error: Exception | None = None
+    for attempt in range(1, DOWNLOAD_MAX_ATTEMPTS + 1):
+        try:
+            with requests.get(ENDPOINT_URL, params=params, headers=HEADERS,
+                              timeout=DOWNLOAD_TIMEOUT, stream=True) as response:
+                response.raise_for_status()
+                with destination.open("wb") as stream:
+                    for chunk in response.iter_content(8 * 1024 * 1024):
+                        stream.write(chunk)
+            if destination.stat().st_size == 0:
+                destination.unlink()
+                if allow_empty and attempt < DOWNLOAD_MAX_ATTEMPTS:
+                    continue
+                if allow_empty:
+                    return False
+                raise ValueError("empty download")
+            if not destination.read_bytes()[:4].startswith(b"PK"):
+                raise ValueError("download is not a ZIP archive")
+            return True
+        except (requests.RequestException, OSError, ValueError) as exc:
+            last_error = exc
+            destination.unlink(missing_ok=True)
+            if attempt < DOWNLOAD_MAX_ATTEMPTS:
+                time.sleep(DOWNLOAD_RETRY_SLEEP_SEC * attempt)
+    raise RuntimeError(f"download failed after {DOWNLOAD_MAX_ATTEMPTS} attempts: {last_error}")
 
-    if not TARGET_REPO_NAME:
-        logger.error(
-            "Imposta GITHUB_TARGET_REPO (nome della repo unica, es. italia-corpus)."
-        )
-        return
 
-    repo = get_or_create_repo(gh, TARGET_REPO_NAME)
-    token = primary_token()
-    clone_url = (
-        f"https://{token}@github.com/{GITHUB_USERNAME}/{TARGET_REPO_NAME}.git"
-        if token
-        else repo.clone_url
+def _load_previous_manifest(clone: Path) -> dict | None:
+    path = clone / "manifest.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
+def _stage_release(repo, tag: str, artifacts: list[Path]):
+    release = repo.create_git_release(tag=tag, name=tag, message="Validated Italia Corpus snapshot", draft=True)
+    try:
+        for artifact in artifacts:
+            release.upload_asset(str(artifact), label=artifact.name)
+        return release
+    except Exception:
+        release.delete_release()
+        raise
+
+
+def extract_and_push(
+    root_path: str,
+    gh: Github | None,
+    *,
+    dry_run: bool = False,
+    baseline: Path | None = None,
+    smoke_test: bool = False,
+) -> Path:
+    """Build a validated snapshot and publish it unless ``dry_run`` is set."""
+    if smoke_test and not dry_run:
+        raise ValueError("smoke_test requires dry_run")
+    work_root = Path(root_path)
+    work_root.mkdir(parents=True, exist_ok=True)
+    collections = merge_collections_by_name(fetch_predefined_collections())
+    if not dry_run and (not TARGET_REPO_NAME or not GITHUB_USERNAME or gh is None):
+        raise RuntimeError("GITHUB_TARGET_REPO and GITHUB_USERNAME are required")
+    if not dry_run:
+        assert gh is not None
+    repo = get_or_create_repo(gh, TARGET_REPO_NAME) if gh else None
+    branch = (repo.default_branch or "main") if repo else "main"
+    clone_url = f"https://github.com/{GITHUB_USERNAME}/{TARGET_REPO_NAME}.git"
+
+    workspace = (
+        nullcontext(tempfile.mkdtemp(prefix="italia-corpus-dry-run-", dir=work_root))
+        if dry_run
+        else tempfile.TemporaryDirectory(prefix="italia-corpus-", dir=work_root)
     )
-    branch = repo.default_branch or "main"
-    logger.info(
-        "All collections will sync under %s/%s (one subfolder per collection, spaces in folder names).",
-        GITHUB_USERNAME,
-        TARGET_REPO_NAME,
-    )
+    with workspace as temporary:
+        root = Path(temporary)
+        clone = root / "repo"
+        if not dry_run:
+            git(["clone", "--depth=1", clone_url, str(clone)], str(root), github_auth=True)
+            git(["config", "user.email", str(GIT_AUTHOR_EMAIL)], str(clone))
+            git(["config", "user.name", str(GIT_AUTHOR_NAME)], str(clone))
+        previous = _load_previous_manifest(baseline or clone)
+        spool = root / "spool"
+        spool.mkdir()
+        candidates_by_urn: dict[str, Candidate] = {}
+        memberships: dict[str, set[str]] = {}
+        article_counts: dict[str, int] = {}
+        rejected: list[dict[str, str]] = []
 
-    with tempfile.TemporaryDirectory(prefix="italia-legal-clone-") as clone_work:
-        clone_dir = os.path.join(clone_work, "repo")
-        logger.info("Cloning %s (shallow, once for all collections)", TARGET_REPO_NAME)
-        git(["clone", "--depth=1", clone_url, clone_dir], cwd=clone_work)
-        git(["config", "user.email", GIT_AUTHOR_EMAIL], cwd=clone_dir)
-        git(["config", "user.name", GIT_AUTHOR_NAME], cwd=clone_dir)
+        def retain(candidates: list[Candidate]) -> None:
+            for candidate in candidates:
+                urn = candidate.metadata.urn or ""
+                code = candidate.metadata.codice_redazionale or ""
+                memberships.setdefault(candidate.collection, set()).add(urn)
+                article_counts[code] = max(article_counts.get(code, 0), candidate.source_articles)
+                previous_candidate = candidates_by_urn.get(urn)
+                if previous_candidate:
+                    report.duplicates += 1
+                if previous_candidate and previous_candidate.rank() <= candidate.rank():
+                    continue
+                target = spool / f"{hashlib.sha256(urn.encode()).hexdigest()}.xml"
+                target.write_text(candidate.content, encoding="utf-8")
+                candidates_by_urn[urn] = Candidate(
+                    target,
+                    candidate.collection,
+                    candidate.source_format,
+                    candidate.metadata,
+                    "",
+                    candidate.source_articles,
+                    candidate.source,
+                )
 
-        urn_index = build_urn_index(Path(clone_dir))
-
+        report = ConversionReport()
+        collections_downloaded = 0
         for collection in collections:
             params = collection_download_params(collection)
-            nome = params["nome"]
-            if not nome:
+            name = params["nome"]
+            archive = root / f"{safe_repo_name(name)}.zip"
+            if not _download(params, archive, allow_empty=smoke_test):
+                logger.warning("Skipping empty collection %r in smoke test", name)
                 continue
+            collections_downloaded += 1
+            with ZipFile(archive) as zf:
+                xml_seen = 0
+                for member in safe_zip_members(zf):
+                    if not member.filename.casefold().endswith(".xml"):
+                        continue
+                    if smoke_test and xml_seen >= SMOKE_XML_PER_COLLECTION:
+                        break
+                    xml_seen += 1
+                    raw = zf.read(member)
+                    source = f"{name}/{member.filename}"
+                    candidate = discover_candidate(
+                        name,
+                        params["formatoRichiesta"],
+                        source,
+                        raw,
+                        report,
+                    )
+                    if candidate:
+                        retain([candidate])
+                    elif dry_run:
+                        rejected_dir = root / "rejected"
+                        rejected_dir.mkdir(exist_ok=True)
+                        digest = hashlib.sha256(source.encode()).hexdigest()
+                        path = rejected_dir / f"{digest}.xml"
+                        path.write_bytes(raw)
+                        rejected.append({
+                            "collection": name,
+                            "source": member.filename,
+                            "path": path.relative_to(root).as_posix(),
+                            "error": report.errors[-1].message,
+                        })
+            archive.unlink()
 
-            logger.info(
-                "Downloading collection %r (formatoRichiesta=%s)",
-                nome,
-                params["formatoRichiesta"],
+        if rejected:
+            (root / "rejected" / "index.json").write_text(
+                json.dumps(rejected, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
             )
 
+        supplemental = (
+            []
+            if smoke_test
+            else fetch_missing_sources(article_counts, root / "sources" / "supplemental")
+        )
+        retain(discover_candidates(supplemental, report))
+        duplicates = report.duplicates
+        canonical = select_canonical(list(candidates_by_urn.values()), report)
+        report.duplicates = duplicates
+        snapshot = root / "snapshot"
+        render_candidates(canonical, snapshot, report)
+        requirements = Path(__file__).parents[2] / "coverage-requirements.json"
+        known_gaps = [] if smoke_test else validate_required_coverage(report, requirements)
+        manifest = write_indexes(
+            snapshot,
+            canonical,
+            report,
+            len(collections),
+            collections_downloaded + len(supplemental),
+            known_gaps,
+            memberships,
+        )
+        write_delta(previous, manifest, snapshot)
+        validate_report(report, previous, Path(__file__).parents[2] / "quality-exceptions.json")
+        artifacts = build_artifacts(snapshot, root / "artifacts")
+        if dry_run:
+            shutil.rmtree(root / "sources", ignore_errors=True)
+            for archive in root.glob("*.zip"):
+                archive.unlink()
+            logger.info("Dry-run output: %s", root)
+            return root
+        legacy_dirs = [collection_subdir_name(c["nomeCollezione"]) for c in collections]
+        staged = stage_snapshot(snapshot, clone, legacy_dirs)
+        if staged:
+            tag, previous_sha = staged
+            release = _stage_release(repo, tag, artifacts)
             try:
-                zip_path: str | None = None
-                download_ok = False
-                for attempt in range(1, DOWNLOAD_MAX_ATTEMPTS + 1):
-                    try:
-                        tmp = tempfile.NamedTemporaryFile(
-                            suffix=".zip", dir=root_path, delete=False
-                        )
-                        zip_path = tmp.name
-                        with requests.get(
-                            ENDPOINT_URL,
-                            params=params,
-                            headers=HEADERS,
-                            timeout=DOWNLOAD_TIMEOUT,
-                            stream=True,
-                        ) as r:
-                            if r.status_code != 200:
-                                preview = (r.text or "")[:200]
-                                logger.warning(
-                                    "Download attempt %d/%d for %r returned HTTP %d: %r",
-                                    attempt,
-                                    DOWNLOAD_MAX_ATTEMPTS,
-                                    nome,
-                                    r.status_code,
-                                    preview,
-                                )
-                                tmp.close()
-                                if zip_path and os.path.exists(zip_path):
-                                    os.unlink(zip_path)
-                                zip_path = None
-                                if attempt == DOWNLOAD_MAX_ATTEMPTS:
-                                    logger.error(
-                                        "Failed to download collection %r after %d attempt(s) — skipping",
-                                        nome,
-                                        DOWNLOAD_MAX_ATTEMPTS,
-                                    )
-                                else:
-                                    backoff = 5 * attempt
-                                    logger.warning(
-                                        "Retrying download for %r in %.0fs",
-                                        nome,
-                                        backoff,
-                                    )
-                                    time.sleep(backoff)
-                                continue
-
-                            for chunk in r.iter_content(chunk_size=8 * 1024 * 1024):
-                                tmp.write(chunk)
-                        tmp.close()
-                        download_ok = True
-                        break
-                    except requests.RequestException as e:
-                        try:
-                            tmp.close()
-                        except Exception:
-                            pass
-                        if zip_path and os.path.exists(zip_path):
-                            os.unlink(zip_path)
-                        zip_path = None
-                        if attempt == DOWNLOAD_MAX_ATTEMPTS:
-                            logger.error(
-                                "Failed to download collection %r after %d attempt(s): %s — skipping",
-                                nome,
-                                DOWNLOAD_MAX_ATTEMPTS,
-                                e,
-                            )
-                        else:
-                            logger.warning(
-                                "Download attempt %d/%d failed for %r: %s — retrying in %.0fs",
-                                attempt,
-                                DOWNLOAD_MAX_ATTEMPTS,
-                                nome,
-                                e,
-                                DOWNLOAD_RETRY_SLEEP_SEC,
-                            )
-                            time.sleep(DOWNLOAD_RETRY_SLEEP_SEC)
-                if not download_ok:
-                    continue
-
-                coll_dir = os.path.join(root_path, safe_repo_name(nome))
-                md_dir = coll_dir + "_md"
-                try:
-                    os.makedirs(coll_dir, exist_ok=True)
-
-                    with open(zip_path, "rb") as f:
-                        header = f.read(512)
-                    if not header.startswith(b"PK"):
-                        logger.error(
-                            "Collection %r is not a valid ZIP file\nFirst 512 bytes: %r",
-                            nome,
-                            header,
-                        )
-                        continue
-                    with ZipFile(zip_path) as zf:
-                        zf.extractall(coll_dir)
-
-                    os.unlink(zip_path)
-                    zip_path = None
-
-                    os.makedirs(md_dir, exist_ok=True)
-                    count = convert_akn_dir_to_md(
-                        coll_dir, md_dir, urn_index, nome
-                    )
-                    logger.info(
-                        "Converted %d AKN XML file(s) to markdown for %r", count, nome
-                    )
-
-                    shutil.rmtree(coll_dir, ignore_errors=True)
-
-                    if count > 0:
-                        sync_collection_to_clone(
-                            md_dir, nome, clone_dir, branch, TARGET_REPO_NAME
-                        )
-                        sub = collection_subdir_name(nome)
-                        dest_root = Path(clone_dir) / sub
-                        update_urn_index_from_paths(
-                            urn_index,
-                            Path(clone_dir),
-                            sorted(dest_root.rglob("*.md")),
-                        )
-                    else:
-                        logger.warning(
-                            "No AKN XML files found in %r, skipping push", nome
-                        )
-
-                except OSError as e:
-                    if e.errno == errno.ENOSPC:
-                        logger.error(
-                            "Disk full while processing collection %r — free space on this "
-                            "volume or set ROOT_PATH to a folder on a larger disk.",
-                            nome,
-                        )
-                    else:
-                        logger.error(
-                            "Error processing collection %r: %s", nome, e, exc_info=True
-                        )
-                except Exception as e:
-                    logger.error(
-                        "Error processing collection %r: %s", nome, e, exc_info=True
-                    )
-                finally:
-                    if zip_path and os.path.exists(zip_path):
-                        os.unlink(zip_path)
-                    shutil.rmtree(coll_dir, ignore_errors=True)
-                    shutil.rmtree(md_dir, ignore_errors=True)
-            finally:
-                time.sleep(random.uniform(2.0, 5.0))
+                push_snapshot(clone, branch, tag)
+                release.update_release(name=tag, message="Validated Italia Corpus snapshot", draft=False)
+            except Exception:
+                rollback_snapshot(clone, branch, tag, previous_sha)
+                release.delete_release()
+                raise
+        logger.info("Published %s acts from %s XML files", report.converted, report.xml_received)
+        return root

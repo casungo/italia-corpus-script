@@ -1,0 +1,16 @@
+{
+  "required": [
+    {"codice_redazionale": "030U1398", "min_articles": 100, "required_anchors": ["art-575", "art-594"], "source": "issue #3, Codice penale"},
+    {"codice_redazionale": "042U0262", "min_articles": 100, "required_anchors": ["art-1"], "source": "issue #3, Codice civile"},
+    {"codice_redazionale": "001G0429", "min_articles": 1, "source": "issue #2, DPR 380/2001"},
+    {"codice_redazionale": "011G0193", "min_articles": 1, "source": "issue #2, DPR 151/2011"},
+    {"codice_redazionale": "006G0171", "min_articles": 1, "source": "issue #2, D.Lgs. 152/2006"},
+    {"codice_redazionale": "18A00716", "min_articles": 1, "source": "issue #2, D.M. 17 gennaio 2018 NTC"}
+  ],
+  "known_gaps": [
+    {
+      "description": "Le NTC 2018 provengono dal supplemento ufficiale Gazzetta e rappresentano il testo originario; il D.M. 9 marzo 2023 è pubblicato separatamente e non viene presentato come consolidamento",
+      "source": "issue #2"
+    }
+  ]
+}

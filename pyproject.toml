@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=78"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "italia-corpus"
+version = "2.0.0"
+description = "Verified Italian legislation snapshots from Normattiva"
+requires-python = ">=3.13"
+dependencies = [
+  "PyGithub==2.9.1",
+  "python-dotenv==1.2.2",
+  "requests==2.33.1",
+  "urllib3==2.6.3",
+  "zstandard==0.23.0",
+  "pyarrow==21.0.0",
+  "pypdf==6.1.1",
+]
+
+[project.scripts]
+italia-corpus = "italia_corpus.cli:main"
+italia-corpus-pipeline = "italia_corpus.__main__:main"
+
+[project.optional-dependencies]
+dev = ["pytest==8.4.2", "ruff==0.12.12", "mypy==1.17.1", "pip-audit==2.9.0", "types-requests==2.32.4.20250913"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.mypy]
+python_version = "3.13"
+packages = ["italia_corpus"]
+ignore_missing_imports = true

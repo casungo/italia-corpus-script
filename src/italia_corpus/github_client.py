@@ -1,10 +1,13 @@
 import os
 import time
+from typing import cast
 
 from github import Auth, Github, GithubException, RateLimitExceededException
+from github.AuthenticatedUser import AuthenticatedUser
+from github.Repository import Repository
 from urllib3.util import Retry
 
-from .config import GITHUB_USERNAME, TARGET_REPO_NAME, logger
+from .config import GITHUB_USERNAME, logger
 
 
 def primary_token() -> str:
@@ -75,7 +78,7 @@ def verify_github_session(gh: Github) -> None:
             )
         raise
     logger.info("GitHub authenticated as %s", login)
-    want = GITHUB_USERNAME.strip()
+    want = (GITHUB_USERNAME or "").strip()
     if want and login.casefold() != want.casefold():
         logger.warning(
             "GITHUB_USERNAME is %r but the token is for %r — "
@@ -85,7 +88,7 @@ def verify_github_session(gh: Github) -> None:
         )
 
 
-def get_or_create_repo(gh: Github, repo_name: str) -> object:
+def get_or_create_repo(gh: Github, repo_name: str) -> Repository:
     """Return the repo if it exists, otherwise create it (private, auto-init)."""
     full_name = f"{GITHUB_USERNAME}/{repo_name}"
     try:
@@ -110,7 +113,7 @@ def get_or_create_repo(gh: Github, repo_name: str) -> object:
                 )
             raise
     logger.info("Creating repo %s", full_name)
-    user = gh.get_user()
+    user = cast(AuthenticatedUser, gh.get_user())
     repo = user.create_repo(
         name=repo_name,
         private=True,

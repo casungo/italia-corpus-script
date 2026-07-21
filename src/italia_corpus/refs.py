@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from typing import Literal, overload
 
 NORMATTIVA_URI_RES = "https://www.normattiva.it/uri-res/N2Ls"
 
@@ -75,16 +76,37 @@ def normattiva_url(href: str) -> str:
     return url
 
 
-def resolve_ref(href: str, label: str, ctx: RefContext) -> str:
+@overload
+def resolve_ref(
+    href: str, label: str, ctx: RefContext, *, with_kind: Literal[True]
+) -> tuple[str, str]: ...
+
+
+@overload
+def resolve_ref(
+    href: str, label: str, ctx: RefContext, *, with_kind: Literal[False] = False
+) -> str: ...
+
+
+def resolve_ref(
+    href: str, label: str, ctx: RefContext, *, with_kind: bool = False
+) -> str | tuple[str, str]:
     """Convert a <ref> href to a markdown link."""
     if not href:
-        return label
+        return (label, "unresolved") if with_kind else label
 
     urn, _, fragment = href.partition("#")
     lookup_urn = href_to_urn(href) or urn
     target = ctx.urn_index.get(lookup_urn)
     if target:
         link = _relative_link(ctx.source_repo_path, target)
-        return f"[{label}]({link})"
+        _, marker, fragment = href.partition("#")
+        if marker and fragment:
+            stable_fragment = re.sub(r"[^a-z0-9]+", "-", fragment.lower()).strip("-")
+            link = f"{link}#{_encode_href(stable_fragment)}"
+        rendered = f"[{label}]({link})"
+        return (rendered, "internal") if with_kind else rendered
 
-    return f"[{label}]({normattiva_url(href)})"
+    rendered = f"[{label}]({normattiva_url(href)})"
+    kind = "external" if lookup_urn else "unresolved"
+    return (rendered, kind) if with_kind else rendered

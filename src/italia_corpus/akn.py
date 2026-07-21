@@ -1,10 +1,10 @@
-"""Extract metadata and body text from Normattiva Akoma Ntoso XML."""
+"""Akoma Ntoso metadata extraction and deterministic Markdown rendering."""
 
 from __future__ import annotations
 
+import re
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
-from pathlib import Path
+from dataclasses import dataclass, field
 
 from .refs import RefContext, resolve_ref
 
@@ -21,7 +21,25 @@ class AknFrontmatter:
     titolo: str | None
     urn: str | None
     codice_redazionale: str | None
-    vigente: bool
+    stato_atto: str
+    versione_data: str | None
+    entrata_in_vigore: str | None
+    abrogazione_data: str | None
+    fonte_versione: str
+
+    @property
+    def vigente(self) -> bool:
+        """Deprecated act-level compatibility flag."""
+        return self.stato_atto == "vigente"
+
+
+@dataclass
+class RenderStats:
+    articles: int = 0
+    internal_links: int = 0
+    external_links: int = 0
+    unresolved_links: int = 0
+    unsupported_tags: set[str] = field(default_factory=set)
 
 
 def _local(tag: str) -> str:
@@ -32,181 +50,212 @@ def _text(el: ET.Element | None) -> str | None:
     if el is None:
         return None
     text = "".join(el.itertext()).strip()
-    return text or None
+    return " ".join(text.split()) if text else None
 
 
 def _find_one(root: ET.Element, path: str) -> ET.Element | None:
-    found = root.find(path, NS)
-    return found
+    return root.find(path, NS)
 
 
-def extract_frontmatter(root: ET.Element) -> AknFrontmatter:
-    """Extract YAML frontmatter fields from an Akoma Ntoso document root."""
+def _event_date(root: ET.Element, event_type: str) -> str | None:
+    event = _find_one(
+        root, f".//akn:meta/akn:lifecycle//akn:eventRef[@type='{event_type}']"
+    )
+    return event.get("date") if event is not None else None
+
+
+def extract_frontmatter(root: ET.Element, source_format: str = "V") -> AknFrontmatter:
     tipo = _text(_find_one(root, ".//akn:preface//akn:docType"))
     numero = _text(_find_one(root, ".//akn:preface//akn:docNumber"))
-
     doc_date = _find_one(root, ".//akn:preface//akn:docDate")
     data = doc_date.get("date") if doc_date is not None else None
-
-    titolo_raw = _text(_find_one(root, ".//akn:preface//akn:docTitle"))
-    titolo = " ".join(titolo_raw.split()) if titolo_raw else None
-
+    titolo = _text(_find_one(root, ".//akn:preface//akn:docTitle"))
     urn_el = _find_one(
         root, ".//akn:meta/akn:identification//akn:FRBRalias[@name='urn:nir']"
     )
     urn = urn_el.get("value") if urn_el is not None else None
-
-    codice_el = _find_one(root, ".//akn:meta/akn:proprietary//eli:id_local")
-    codice_redazionale = _text(codice_el)
-
-    repeal_events = root.findall(
-        ".//akn:meta/akn:lifecycle//akn:eventRef[@type='repeal']", NS
+    codice_redazionale = _text(
+        _find_one(root, ".//akn:meta/akn:proprietary//eli:id_local")
     )
-    vigente = len(repeal_events) == 0
-
+    entrata = _event_date(root, "generation") or _event_date(root, "entryIntoForce")
+    abrogazione = _event_date(root, "repeal")
+    versione_el = _find_one(
+        root, ".//akn:meta/akn:identification//akn:FRBRexpression/akn:FRBRdate"
+    )
+    versione = versione_el.get("date") if versione_el is not None else None
+    reference_date = versione or data or "9999-12-31"
+    if abrogazione and abrogazione <= reference_date:
+        stato = "abrogato"
+    elif entrata and entrata > reference_date:
+        stato = "futuro"
+    elif source_format.upper() in {"V", "M"}:
+        stato = "vigente"
+    else:
+        stato = "ignoto"
+    fonte = {"V": "vigente", "O": "originale", "M": "multivigente"}.get(
+        source_format.upper(), "ignoto"
+    )
     return AknFrontmatter(
-        tipo=tipo,
-        numero=numero,
-        data=data,
-        titolo=titolo,
-        urn=urn,
-        codice_redazionale=codice_redazionale,
-        vigente=vigente,
+        tipo, numero, data, titolo, urn, codice_redazionale, stato, versione,
+        entrata, abrogazione, fonte,
     )
 
 
 def format_frontmatter(fm: AknFrontmatter) -> str:
-    """Serialize frontmatter fields to YAML between --- markers."""
-    fields: list[tuple[str, str | bool]] = []
-    if fm.tipo is not None:
-        fields.append(("tipo", fm.tipo))
-    if fm.numero is not None:
-        fields.append(("numero", fm.numero))
-    if fm.data is not None:
-        fields.append(("data", fm.data))
-    if fm.titolo is not None:
-        fields.append(("titolo", fm.titolo))
-    if fm.urn is not None:
-        fields.append(("urn", fm.urn))
-    if fm.codice_redazionale is not None:
-        fields.append(("codice_redazionale", fm.codice_redazionale))
-    fields.append(("vigente", fm.vigente))
-
+    values: list[tuple[str, str | bool | None]] = [
+        ("schema_version", "2"), ("tipo", fm.tipo), ("numero", fm.numero),
+        ("data", fm.data), ("titolo", fm.titolo), ("urn", fm.urn),
+        ("codice_redazionale", fm.codice_redazionale),
+        ("stato_atto", fm.stato_atto), ("versione_data", fm.versione_data),
+        ("entrata_in_vigore", fm.entrata_in_vigore),
+        ("abrogazione_data", fm.abrogazione_data),
+        ("fonte_versione", fm.fonte_versione), ("vigente", fm.vigente),
+    ]
     lines = ["---"]
-    for key, value in fields:
-        if isinstance(value, bool):
+    for key, value in values:
+        if value is None:
+            lines.append(f"{key}: null")
+        elif isinstance(value, bool):
             lines.append(f"{key}: {'true' if value else 'false'}")
         elif key == "titolo":
             escaped = value.replace("\\", "\\\\").replace('"', '\\"')
             lines.append(f'{key}: "{escaped}"')
         else:
             lines.append(f"{key}: {value}")
-    lines.append("---")
-    return "\n".join(lines) + "\n\n"
+    return "\n".join(lines + ["---", ""])
 
 
-def _render_inline(el: ET.Element, ctx: RefContext) -> str:
-    tag = _local(el.tag)
-    if tag == "ref":
+def _slug(value: str) -> str:
+    value = value.lower().replace("°", "")
+    return re.sub(r"[^a-z0-9]+", "-", value).strip("-") or "x"
+
+
+def _anchor(el: ET.Element, ancestors: tuple[str, ...]) -> str:
+    eid = el.get("eId") or el.get("id")
+    if eid:
+        return _slug(eid.replace("__", "-"))
+    num = _text(el.find(f"{{{AKN_NS}}}num")) or str(len(ancestors) + 1)
+    names = {"article": "art", "paragraph": "comma", "point": "punto", "item": "item"}
+    return "-".join((*ancestors, names.get(_local(el.tag), _local(el.tag)), _slug(num)))
+
+
+def _anchor_tag(el: ET.Element, anchor: str) -> str:
+    attributes = [f'id="{anchor}"']
+    if valid_from := el.get("start") or el.get("periodStart"):
+        attributes.append(f'data-valid-from="{valid_from.lstrip("#")}"')
+    if valid_to := el.get("end") or el.get("periodEnd"):
+        attributes.append(f'data-valid-to="{valid_to.lstrip("#")}"')
+    return f"<a {' '.join(attributes)}></a>"
+
+
+_CONTAINERS = {
+    "akomaNtoso", "act", "doc", "body", "preamble", "conclusions", "mainBody",
+    "component", "components", "attachment", "attachments", "container",
+    "content", "intro", "wrapUp", "blockList", "list", "item", "point",
+    "paragraph", "subparagraph", "clause", "quotedStructure", "mod",
+}
+_HEADINGS = {"article", "section", "chapter", "part", "division", "title", "subtitle", "book", "tome"}
+_INLINE = {"ref", "span", "b", "i", "u", "ins", "del", "quotedText", "date", "term", "abbr", "sub", "sup"}
+_IGNORED = {"meta", "preface", "num", "heading"}
+
+
+def _render_inline(el: ET.Element, ctx: RefContext, stats: RenderStats) -> str:
+    if _local(el.tag) == "ref":
         href = el.get("href") or ""
         label = _text(el) or href
-        if href:
-            return resolve_ref(href, label, ctx)
-        return label
-
-    parts: list[str] = []
-    if el.text:
-        parts.append(el.text)
+        rendered, kind = resolve_ref(href, label, ctx, with_kind=True)
+        if kind == "internal":
+            stats.internal_links += 1
+        elif kind == "external":
+            stats.external_links += 1
+        else:
+            stats.unresolved_links += 1
+        return rendered
+    parts = [el.text or ""]
     for child in el:
-        parts.append(_render_inline(child, ctx))
-        if child.tail:
-            parts.append(child.tail)
+        parts.append(_render_inline(child, ctx, stats))
+        parts.append(child.tail or "")
     return "".join(parts).strip()
 
 
-def _render_block(
-    el: ET.Element, lines: list[str], ctx: RefContext, heading_level: int = 2
-) -> None:
-    tag = _local(el.tag)
+def _render_table(el: ET.Element, lines: list[str], ctx: RefContext, stats: RenderStats) -> None:
+    rows = []
+    for row in el.iter():
+        if _local(row.tag) == "tr":
+            rows.append([_render_inline(c, ctx, stats) for c in row if _local(c.tag) in {"th", "td"}])
+    if not rows:
+        return
+    width = max(map(len, rows))
+    rows = [r + [""] * (width - len(r)) for r in rows]
+    lines.extend(["| " + " | ".join(rows[0]) + " |", "| " + " | ".join(["---"] * width) + " |"])
+    lines.extend("| " + " | ".join(row) + " |" for row in rows[1:])
+    lines.append("")
 
-    if tag == "article":
-        num_el = el.find(f"{{{AKN_NS}}}num")
-        heading_el = el.find(f"{{{AKN_NS}}}heading")
-        num = _text(num_el)
-        heading = _text(heading_el)
-        title = " — ".join(part for part in (num, heading) if part)
+
+def _render_block(el: ET.Element, lines: list[str], ctx: RefContext, stats: RenderStats,
+                  level: int = 2, ancestors: tuple[str, ...] = ()) -> None:
+    tag = _local(el.tag)
+    if tag in _IGNORED:
+        return
+    if tag == "table":
+        _render_table(el, lines, ctx, stats)
+        return
+    if tag in _HEADINGS:
+        anchor = _anchor(el, ancestors)
+        num = _text(el.find(f"{{{AKN_NS}}}num"))
+        heading = _text(el.find(f"{{{AKN_NS}}}heading"))
+        title = " — ".join(x for x in (num, heading) if x)
         if title:
-            lines.append(f"{'#' * heading_level} {title}")
-            lines.append("")
+            lines.extend([_anchor_tag(el, anchor), f"{'#' * min(level, 6)} {title}", ""])
+        if tag == "article":
+            stats.articles += 1
         for child in el:
             if _local(child.tag) not in {"num", "heading"}:
-                _render_block(child, lines, ctx, heading_level + 1)
+                _render_block(child, lines, ctx, stats, level + 1, (*ancestors, anchor))
         return
-
-    if tag in {"paragraph", "content", "p", "blockList", "item", "point"}:
-        text = _render_inline(el, ctx) if tag == "p" else None
+    if tag == "p":
+        text = _render_inline(el, ctx, stats)
         if text:
-            lines.append(text)
-            lines.append("")
-            return
-        for child in el:
-            _render_block(child, lines, ctx, heading_level)
+            lines.extend([text, ""])
         return
-
-    if tag in {"section", "chapter", "part", "division", "title", "subtitle"}:
-        heading_el = el.find(f"{{{AKN_NS}}}heading")
-        heading = _text(heading_el)
-        if heading:
-            lines.append(f"{'#' * min(heading_level, 6)} {heading}")
-            lines.append("")
-        for child in el:
-            if heading_el is not None and child is heading_el:
-                continue
-            _render_block(child, lines, ctx, heading_level + 1)
+    if tag in _INLINE:
+        text = _render_inline(el, ctx, stats)
+        if text:
+            lines.extend([text, ""])
         return
-
-    text = _render_inline(el, ctx)
-    if text and tag not in {
-        "meta",
-        "preface",
-        "body",
-        "preamble",
-        "conclusions",
-        "act",
-    }:
-        lines.append(text)
-        lines.append("")
-        return
-
-    for child in el:
-        _render_block(child, lines, ctx, heading_level)
+    if tag not in _CONTAINERS:
+        stats.unsupported_tags.add(tag)
+    children = list(el)
+    if children:
+        for child in children:
+            _render_block(child, lines, ctx, stats, level, ancestors)
+    else:
+        text = (el.text or "").strip()
+        if text:
+            lines.extend([text, ""])
 
 
-def body_to_markdown(root: ET.Element, ctx: RefContext) -> str:
-    """Convert preamble, body, and conclusions to markdown."""
+def body_to_markdown(root: ET.Element, ctx: RefContext) -> tuple[str, RenderStats]:
     lines: list[str] = []
-    for section in ("preamble", "body", "conclusions"):
-        section_el = _find_one(root, f".//akn:{section}")
-        if section_el is not None:
-            _render_block(section_el, lines, ctx)
+    stats = RenderStats()
+    document = next((child for child in root if _local(child.tag) in {"act", "doc"}), root)
+    for child in document:
+        if _local(child.tag) not in {"meta", "preface"}:
+            _render_block(child, lines, ctx, stats)
     while lines and not lines[-1].strip():
         lines.pop()
-    return "\n".join(lines)
+    return "\n".join(lines), stats
 
 
 def parse_akn_xml(content: str) -> ET.Element:
-    if not content or not content.strip():
+    if not content.strip():
         raise ValueError("Empty content")
     return ET.fromstring(content)
 
 
-def akn_xml_to_markdown(
-    content: str,
-    urn_index: dict[str, str],
-    source_repo_path: str,
-) -> tuple[AknFrontmatter, str]:
+def akn_xml_to_markdown(content: str, urn_index: dict[str, str], source_repo_path: str,
+                        source_format: str = "V") -> tuple[AknFrontmatter, str, RenderStats]:
     root = parse_akn_xml(content)
-    fm = extract_frontmatter(root)
-    ctx = RefContext(urn_index=urn_index, source_repo_path=source_repo_path)
-    body = body_to_markdown(root, ctx)
-    return fm, format_frontmatter(fm) + body
+    fm = extract_frontmatter(root, source_format)
+    body, stats = body_to_markdown(root, RefContext(urn_index, source_repo_path))
+    return fm, format_frontmatter(fm) + body + "\n", stats
