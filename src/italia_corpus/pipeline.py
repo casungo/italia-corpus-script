@@ -9,7 +9,7 @@ import tempfile
 import time
 from contextlib import nullcontext
 from pathlib import Path
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
 import requests
 from github import Github
@@ -27,8 +27,8 @@ from .git_ops import git, push_snapshot, rollback_snapshot, stage_snapshot
 from .github_client import get_or_create_repo
 from .normattiva import collection_download_params, fetch_predefined_collections, merge_collections_by_name
 from .snapshot import (
-    build_artifacts, safe_zip_members, validate_report, validate_required_coverage,
-    write_delta, write_indexes,
+    QualityGateError, build_artifacts, build_legacy_archive, safe_zip_members, validate_report,
+    validate_required_coverage, write_delta, write_indexes,
 )
 from .supplemental import fetch_missing_sources
 
@@ -37,9 +37,105 @@ HEADERS = {
     "Accept": "application/zip,application/octet-stream",
 }
 SMOKE_XML_PER_COLLECTION = 1_000
+CACHE_INVENTORY = "inventory.json"
 
 
-def _download(params: dict, destination: Path, *, allow_empty: bool = False) -> bool:
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_zip(path: Path) -> tuple[str, int]:
+    """Read every member so truncated data and CRC errors fail before cache reuse."""
+    with ZipFile(path) as archive:
+        members = list(safe_zip_members(archive))
+        if not members:
+            raise ValueError("ZIP archive has no files")
+        if bad_member := archive.testzip():
+            raise ValueError(f"corrupt ZIP member: {bad_member}")
+    return _sha256(path), len(members)
+
+
+def _load_cache_inventory(cache_root: Path) -> dict:
+    path = cache_root / CACHE_INVENTORY
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if value.get("schema_version") == 1 and isinstance(value.get("archives"), dict):
+            return value
+    except (OSError, ValueError, AttributeError):
+        pass
+    return {"schema_version": 1, "archives": {}}
+
+
+def _write_cache_inventory(cache_root: Path, inventory: dict) -> None:
+    path = cache_root / CACHE_INVENTORY
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(inventory, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def _cache_zip(cache: Path, source: Path, params: dict, digest: str, members: int) -> None:
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    temporary = cache.with_suffix(".tmp")
+    shutil.copy2(source, temporary)
+    temporary.replace(cache)
+    cache.with_suffix(cache.suffix + ".sha256").write_text(
+        f"{digest}  {cache.name}\n", encoding="ascii"
+    )
+    inventory = _load_cache_inventory(cache.parent)
+    inventory["archives"][cache.name] = {
+        "collection": params.get("nome"),
+        "format": params.get("formatoRichiesta"),
+        "members": members,
+        "sha256": digest,
+        "size": cache.stat().st_size,
+    }
+    _write_cache_inventory(cache.parent, inventory)
+
+
+def _restore_cached_zip(cache: Path, destination: Path) -> bool:
+    if not cache.is_file():
+        return False
+    checksum = cache.with_suffix(cache.suffix + ".sha256")
+    inventory = _load_cache_inventory(cache.parent)
+    entry = inventory["archives"].get(cache.name)
+    try:
+        expected_line = checksum.read_text(encoding="ascii").strip()
+        digest, members = _verify_zip(cache)
+        if (
+            expected_line != f"{digest}  {cache.name}"
+            or not isinstance(entry, dict)
+            or entry.get("sha256") != digest
+            or entry.get("size") != cache.stat().st_size
+            or entry.get("members") != members
+        ):
+            raise ValueError("cache checksum or inventory mismatch")
+        shutil.copy2(cache, destination)
+        return True
+    except (OSError, BadZipFile, QualityGateError, ValueError):
+        logger.warning("Discarding invalid cached ZIP %s", cache)
+        cache.unlink(missing_ok=True)
+        checksum.unlink(missing_ok=True)
+        inventory["archives"].pop(cache.name, None)
+        _write_cache_inventory(cache.parent, inventory)
+        return False
+
+
+def _download(params: dict, destination: Path, cache: Path | None = None) -> bool:
+    started = time.perf_counter()
+    if cache and cache.is_file():
+        if _restore_cached_zip(cache, destination):
+            logger.info(
+                "Download collection=%r format=%s cache_hit=true elapsed=%.2fs",
+                params.get("nome"), params.get("formatoRichiesta"), time.perf_counter() - started,
+            )
+            return True
     last_error: Exception | None = None
     for attempt in range(1, DOWNLOAD_MAX_ATTEMPTS + 1):
         try:
@@ -51,25 +147,60 @@ def _download(params: dict, destination: Path, *, allow_empty: bool = False) -> 
                         stream.write(chunk)
             if destination.stat().st_size == 0:
                 destination.unlink()
-                if allow_empty and attempt < DOWNLOAD_MAX_ATTEMPTS:
-                    continue
-                if allow_empty:
-                    return False
                 raise ValueError("empty download")
-            if not destination.read_bytes()[:4].startswith(b"PK"):
-                raise ValueError("download is not a ZIP archive")
-            return True
-        except (requests.RequestException, OSError, ValueError) as exc:
+            digest, members = _verify_zip(destination)
+            if cache:
+                _cache_zip(cache, destination, params, digest, members)
+            logger.info(
+                "Download collection=%r format=%s cache_hit=false attempt=%d elapsed=%.2fs",
+                params.get("nome"), params.get("formatoRichiesta"), attempt,
+                time.perf_counter() - started,
+            )
+            return False
+        except (
+            requests.RequestException, OSError, BadZipFile, QualityGateError, ValueError
+        ) as exc:
             last_error = exc
             destination.unlink(missing_ok=True)
             if attempt < DOWNLOAD_MAX_ATTEMPTS:
                 time.sleep(DOWNLOAD_RETRY_SLEEP_SEC * attempt)
-    raise RuntimeError(f"download failed after {DOWNLOAD_MAX_ATTEMPTS} attempts: {last_error}")
+    name = params.get("nome", "unknown collection")
+    raise RuntimeError(
+        f"{name}: download failed after {DOWNLOAD_MAX_ATTEMPTS} attempts: {last_error}"
+    )
 
 
 def _load_previous_manifest(clone: Path) -> dict | None:
     path = clone / "manifest.json"
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
+def _download_collection(collection: dict, destination: Path, cache_root: Path) -> tuple[dict, bool]:
+    params = collection_download_params(collection)
+    preferred = params["formatoRichiesta"]
+    available = collection.get("formatiDisponibili") or [preferred]
+    failures = []
+    formats = [
+        preferred,
+        *(value for value in ("V", "O", "M") if value in available and value != preferred),
+    ]
+    for source_format in formats:
+        attempt = params | {"formatoRichiesta": source_format}
+        cache_name = "-".join((
+            safe_repo_name(attempt["nome"]), source_format,
+            str(collection.get("dataCreazione") or "unknown"),
+        )) + ".zip"
+        try:
+            cache_hit = _download(attempt, destination, cache_root / cache_name)
+            if source_format != preferred:
+                logger.warning(
+                    "Using %s instead of unavailable preferred format %s for %r",
+                    source_format, preferred, attempt["nome"],
+                )
+            return attempt, cache_hit
+        except RuntimeError as exc:
+            failures.append(str(exc))
+    raise RuntimeError("all advertised formats failed:\n- " + "\n- ".join(failures))
 
 
 def _stage_release(repo, tag: str, artifacts: list[Path]):
@@ -90,12 +221,15 @@ def extract_and_push(
     dry_run: bool = False,
     baseline: Path | None = None,
     smoke_test: bool = False,
+    download_cache: Path | None = None,
 ) -> Path:
     """Build a validated snapshot and publish it unless ``dry_run`` is set."""
     if smoke_test and not dry_run:
         raise ValueError("smoke_test requires dry_run")
     work_root = Path(root_path)
     work_root.mkdir(parents=True, exist_ok=True)
+    cache_root = download_cache or work_root / "download-cache"
+    cache_root.mkdir(parents=True, exist_ok=True)
     collections = merge_collections_by_name(fetch_predefined_collections())
     if not dry_run and (not TARGET_REPO_NAME or not GITHUB_USERNAME or gh is None):
         raise RuntimeError("GITHUB_TARGET_REPO and GITHUB_USERNAME are required")
@@ -150,13 +284,16 @@ def extract_and_push(
 
         report = ConversionReport()
         collections_downloaded = 0
-        for collection in collections:
-            params = collection_download_params(collection)
-            name = params["nome"]
+        for number, collection in enumerate(collections, 1):
+            collection_started = time.perf_counter()
+            name = collection_download_params(collection)["nome"]
+            logger.info(
+                "Collection %d/%d start name=%r formats=%s",
+                number, len(collections), name,
+                ",".join(collection.get("formatiDisponibili") or []),
+            )
             archive = root / f"{safe_repo_name(name)}.zip"
-            if not _download(params, archive, allow_empty=smoke_test):
-                logger.warning("Skipping empty collection %r in smoke test", name)
-                continue
+            params, cache_hit = _download_collection(collection, archive, cache_root)
             collections_downloaded += 1
             with ZipFile(archive) as zf:
                 xml_seen = 0
@@ -190,6 +327,11 @@ def extract_and_push(
                             "error": report.errors[-1].message,
                         })
             archive.unlink()
+            logger.info(
+                "Collection %d/%d done name=%r format=%s cache_hit=%s xml=%d elapsed=%.2fs",
+                number, len(collections), name, params["formatoRichiesta"],
+                str(cache_hit).lower(), xml_seen, time.perf_counter() - collection_started,
+            )
 
         if rejected:
             (root / "rejected" / "index.json").write_text(
@@ -228,6 +370,9 @@ def extract_and_push(
             logger.info("Dry-run output: %s", root)
             return root
         legacy_dirs = [collection_subdir_name(c["nomeCollezione"]) for c in collections]
+        legacy_archive = build_legacy_archive(clone, legacy_dirs, root / "artifacts")
+        if legacy_archive:
+            artifacts.append(legacy_archive)
         staged = stage_snapshot(snapshot, clone, legacy_dirs)
         if staged:
             tag, previous_sha = staged

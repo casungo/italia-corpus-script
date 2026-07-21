@@ -63,6 +63,7 @@ def merge_collections_by_name(rows: list[dict]) -> list[dict]:
         merged = dict(pick)
         merged["nomeCollezione"] = nome
         merged["formatoCollezione"] = chosen
+        merged["formatiDisponibili"] = sorted(codes)
         out.append(merged)
     return out
 

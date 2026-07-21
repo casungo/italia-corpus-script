@@ -1,1 +1,16 @@
-[]
+[
+  {
+    "metric": "invalid_xml",
+    "collection": "Regi decreti",
+    "expected_value": ["091U0260", "008U0150", "011U1413", "026U0596", "029U0062", "030U1629", "013U0453", "034U0383", "030U1643", "040U1077", "065U2641"],
+    "reason": "Normattiva restituisce 11 XML troncati esattamente a 1 MiB; quarantena documentata in docs/upstream-anomalies.md",
+    "expires": "2026-08-31"
+  },
+  {
+    "metric": "editorial_code_collision",
+    "collection": "*",
+    "expected_value": ["099G0224", "094G0140", "093G0018", "093G0125", "095G0089", "092G0023", "094G0139", "088G0373", "090G0219", "081U0307", "092G0443", "000G0047", "046U0182", "081U0453", "092G0051", "063U1471"],
+    "reason": "Sedici codici redazionali upstream identificano URN diverse; entrambi i candidati restano esclusi",
+    "expires": "2026-08-31"
+  }
+]

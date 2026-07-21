@@ -31,6 +31,11 @@ def main() -> None:
         help="Dry-run campionato: tutte le collezioni, massimo 1.000 XML per archivio.",
     )
     parser.add_argument(
+        "--download-cache",
+        type=Path,
+        help="Cache persistente degli ZIP, separata per collezione, formato e data upstream.",
+    )
+    parser.add_argument(
         "root_path",
         nargs="?",
         default=os.getenv("ROOT_PATH"),
@@ -58,6 +63,7 @@ def main() -> None:
         dry_run=args.dry_run,
         baseline=args.baseline,
         smoke_test=args.smoke_test,
+        download_cache=args.download_cache,
     )
     if args.dry_run:
         logger.info("Snapshot e artifact conservati in %s", output)

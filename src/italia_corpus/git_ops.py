@@ -75,7 +75,7 @@ def stage_snapshot(snapshot: Path, clone_dir: Path, collection_dirs: list[str]) 
 
 
 def push_snapshot(clone_dir: Path, branch: str, tag: str) -> None:
-    git(["push", "origin", f"HEAD:{branch}", tag], str(clone_dir), github_auth=True)
+    git(["push", "--atomic", "origin", f"HEAD:{branch}", tag], str(clone_dir), github_auth=True)
 
 
 def rollback_snapshot(clone_dir: Path, branch: str, tag: str, previous_sha: str) -> None:
