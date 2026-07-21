@@ -36,8 +36,16 @@ def test_codes_include_substantive_attached_articles() -> None:
         "urn:nir:stato:regio.decreto:1930-10-19;1398": "atti/030U1398.md",
         "urn:nir:stato:regio.decreto:1942-03-16;262": "atti/042U0262.md",
     }
-    _, penal, stats = akn_xml_to_markdown((FIXTURES / "codice_penale.xml").read_text(), index, "atti/030U1398.md")
-    _, civil, _ = akn_xml_to_markdown((FIXTURES / "codice_civile.xml").read_text(), index, "atti/042U0262.md")
+    _, penal, stats = akn_xml_to_markdown(
+        (FIXTURES / "codice_penale.xml").read_text(encoding="utf-8"),
+        index,
+        "atti/030U1398.md",
+    )
+    _, civil, _ = akn_xml_to_markdown(
+        (FIXTURES / "codice_civile.xml").read_text(encoding="utf-8"),
+        index,
+        "atti/042U0262.md",
+    )
     assert '<a id="art-575" data-akn-name="article"></a>' in penal and "Chiunque cagiona la morte" in penal
     assert "Capacità giuridica" in civil and stats.articles == 2
 
@@ -69,7 +77,9 @@ def test_complex_structure_table_list_and_stable_fragment() -> None:
         "urn:nir:stato:legge:2020-01-01;1": "atti/020G0001.md",
         "urn:nir:stato:regio.decreto:1930-10-19;1398": "atti/030U1398.md",
     }
-    _, markdown, stats = akn_xml_to_markdown((FIXTURES / "complex.xml").read_text(), index, "atti/020G0001.md")
+    _, markdown, stats = akn_xml_to_markdown(
+        (FIXTURES / "complex.xml").read_text(encoding="utf-8"), index, "atti/020G0001.md"
+    )
     assert "030U1398.md#art-575" in markdown
     assert "| Voce | Valore |" in markdown
     assert "Primo elemento" in markdown
@@ -78,7 +88,7 @@ def test_complex_structure_table_list_and_stable_fragment() -> None:
 
 def test_temporal_attachment_abrogation_and_deep_lists_golden() -> None:
     _, markdown, stats = akn_xml_to_markdown(
-        (FIXTURES / "temporal.xml").read_text(),
+        (FIXTURES / "temporal.xml").read_text(encoding="utf-8"),
         {"urn:nir:stato:legge:2020-01-01;9": "atti/020G0009.md"},
         "atti/020G0009.md", "M",
     )
