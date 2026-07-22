@@ -39,5 +39,5 @@ jobs:
       - run: italia-corpus-pipeline "${RUNNER_TEMP}/italia-corpus"
         env:
           GITHUB_TOKEN: ${{ secrets.CORPUS_PUBLISH_TOKEN }}
-          GITHUB_USERNAME: ahmeabd
+          GITHUB_USERNAME: casungo
           GITHUB_TARGET_REPO: italia-corpus

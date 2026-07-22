@@ -63,7 +63,7 @@ Variabili obbligatorie: `GITHUB_USERNAME`, `GITHUB_TARGET_REPO` e un token tra `
 
 Con `--dry-run` la pipeline non inizializza GitHub e non crea commit, tag o release. Snapshot e artifact restano nella directory `italia-corpus-dry-run-*` stampata a fine esecuzione; `--baseline` abilita i controlli di regressione contro un manifest precedente.
 
-`--smoke-test` prova tutte le collezioni disponibili in modalità fail-closed, ma converte al massimo i primi 1.000 XML di ciascun archivio. Anche un archivio vuoto interrompe l'esecuzione. Verifica conversione, manifest e artifact senza applicare i gate di copertura che richiedono il corpus completo.
+`--smoke-test` prova tutte le collezioni disponibili, ma converte al massimo i primi 1.000 XML di ciascun archivio. Se una collezione resta irraggiungibile, vuota o non valida dopo tutti i retry, registra un warning e continua con le altre; gli XML scaricati restano invece soggetti agli stessi controlli fail-closed della pipeline completa. Verifica conversione, manifest e artifact senza applicare i gate di copertura che richiedono il corpus completo. La pipeline completa non salta mai una collezione non disponibile.
 
 Gli ZIP validi vengono conservati per nome, formato e `dataCreazione` upstream. Ogni archivio ha
 un checksum SHA-256 ed è registrato in `inventory.json`; prima del riuso vengono verificati

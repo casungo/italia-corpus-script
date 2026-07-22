@@ -3,7 +3,7 @@
 Il rollout operativo usa quattro gate, tutti ripetibili sullo stesso codice:
 
 1. CI parser e conversione multi-collezione;
-2. smoke giornaliero fail-closed su tutte le collezioni;
+2. smoke giornaliero su tutte le collezioni, tollerante ai download esauriti ma fail-closed sui contenuti ricevuti;
 3. snapshot mensile completo, validazione e artifact;
 4. pubblicazione atomica di commit, tag e release dopo il caricamento degli artifact.
 
