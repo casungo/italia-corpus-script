@@ -427,3 +427,40 @@ def test_collection_download_falls_back_to_an_advertised_format(
     assert attempted == ["V", "O", "M"]
     assert params["formatoRichiesta"] == "M"
     assert cache_hit is False
+
+
+def test_smoke_test_skips_collection_after_all_download_formats_fail(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    monkeypatch.setattr(
+        pipeline,
+        "_download_collection",
+        lambda *args: (_ for _ in ()).throw(RuntimeError("connection reset")),
+    )
+    caplog.set_level(logging.WARNING, logger="italia_corpus")
+
+    result = pipeline._download_collection_for_run(
+        {"nomeCollezione": "Intermittente"},
+        tmp_path / "archive.zip",
+        tmp_path / "cache",
+        smoke_test=True,
+    )
+
+    assert result is None
+    assert "Skipping unavailable collection during smoke test: connection reset" in caplog.text
+
+
+def test_snapshot_fails_when_collection_download_fails(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        pipeline,
+        "_download_collection",
+        lambda *args: (_ for _ in ()).throw(RuntimeError("connection reset")),
+    )
+
+    with pytest.raises(RuntimeError, match="connection reset"):
+        pipeline._download_collection_for_run(
+            {"nomeCollezione": "Intermittente"},
+            tmp_path / "archive.zip",
+            tmp_path / "cache",
+            smoke_test=False,
+        )

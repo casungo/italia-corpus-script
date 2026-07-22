@@ -203,6 +203,22 @@ def _download_collection(collection: dict, destination: Path, cache_root: Path) 
     raise RuntimeError("all advertised formats failed:\n- " + "\n- ".join(failures))
 
 
+def _download_collection_for_run(
+    collection: dict,
+    destination: Path,
+    cache_root: Path,
+    *,
+    smoke_test: bool,
+) -> tuple[dict, bool] | None:
+    try:
+        return _download_collection(collection, destination, cache_root)
+    except RuntimeError as exc:
+        if not smoke_test:
+            raise
+        logger.warning("Skipping unavailable collection during smoke test: %s", exc)
+        return None
+
+
 def _stage_release(repo, tag: str, artifacts: list[Path]):
     release = repo.create_git_release(tag=tag, name=tag, message="Validated Italia Corpus snapshot", draft=True)
     try:
@@ -293,7 +309,12 @@ def extract_and_push(
                 ",".join(collection.get("formatiDisponibili") or []),
             )
             archive = root / f"{safe_repo_name(name)}.zip"
-            params, cache_hit = _download_collection(collection, archive, cache_root)
+            download = _download_collection_for_run(
+                collection, archive, cache_root, smoke_test=smoke_test
+            )
+            if download is None:
+                continue
+            params, cache_hit = download
             collections_downloaded += 1
             with ZipFile(archive) as zf:
                 xml_seen = 0
