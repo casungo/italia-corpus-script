@@ -40,7 +40,7 @@ HEADERS = {
 }
 SMOKE_XML_PER_COLLECTION = 1_000
 CACHE_INVENTORY = "inventory.json"
-DISCOVERY_WORKERS = min(8, os.cpu_count() or 1)
+DISCOVERY_WORKERS = min(8, max(1, (os.cpu_count() or 1) * 2))
 
 
 def _sha256(path: Path) -> str:
