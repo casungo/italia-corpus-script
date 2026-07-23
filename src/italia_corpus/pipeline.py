@@ -41,6 +41,7 @@ HEADERS = {
 SMOKE_XML_PER_COLLECTION = 1_000
 CACHE_INVENTORY = "inventory.json"
 DISCOVERY_WORKERS = min(8, max(1, (os.cpu_count() or 1) * 2))
+_DISCOVERY_ARCHIVE: ZipFile | None = None
 
 
 def _sha256(path: Path) -> str:
@@ -222,10 +223,22 @@ def _download_collection_for_run(
         return None
 
 
-def _discover_payload(payload: tuple[str, str, str, bytes]) -> tuple[Candidate | None, ConversionReport]:
-    collection, source_format, source, raw = payload
+def _open_discovery_archive(path: Path) -> None:
+    global _DISCOVERY_ARCHIVE
+    _DISCOVERY_ARCHIVE = ZipFile(path)
+
+
+def _discover_member(
+    payload: tuple[str, str, str],
+) -> tuple[Candidate | None, ConversionReport, bytes | None]:
+    collection, source_format, member = payload
+    if _DISCOVERY_ARCHIVE is None:
+        raise RuntimeError("discovery archive was not initialized")
+    raw = _DISCOVERY_ARCHIVE.read(member)
+    source = f"{collection}/{member}"
     report = ConversionReport()
-    return discover_candidate(collection, source_format, source, raw, report), report
+    candidate = discover_candidate(collection, source_format, source, raw, report)
+    return candidate, report, raw if candidate is None else None
 
 
 def _merge_discovery_report(target: ConversionReport, source: ConversionReport) -> None:
@@ -319,69 +332,69 @@ def extract_and_push(
         report = ConversionReport()
         collections_downloaded = 0
         logger.info("Discovery workers: %d", DISCOVERY_WORKERS)
-        with ProcessPoolExecutor(max_workers=DISCOVERY_WORKERS) as discovery_pool:
-            for number, collection in enumerate(collections, 1):
-                collection_started = time.perf_counter()
-                name = collection_download_params(collection)["nome"]
-                logger.info(
-                    "Collection %d/%d start name=%r formats=%s",
-                    number, len(collections), name,
-                    ",".join(collection.get("formatiDisponibili") or []),
-                )
-                archive = root / f"{safe_repo_name(name)}.zip"
-                download = _download_collection_for_run(
-                    collection, archive, cache_root, smoke_test=smoke_test
-                )
-                if download is None:
-                    continue
-                params, cache_hit = download
-                collections_downloaded += 1
-                with ZipFile(archive) as zf:
-                    members = [
-                        member for member in safe_zip_members(zf)
-                        if member.filename.casefold().endswith(".xml")
+        for number, collection in enumerate(collections, 1):
+            collection_started = time.perf_counter()
+            name = collection_download_params(collection)["nome"]
+            logger.info(
+                "Collection %d/%d start name=%r formats=%s",
+                number, len(collections), name,
+                ",".join(collection.get("formatiDisponibili") or []),
+            )
+            archive = root / f"{safe_repo_name(name)}.zip"
+            download = _download_collection_for_run(
+                collection, archive, cache_root, smoke_test=smoke_test
+            )
+            if download is None:
+                continue
+            params, cache_hit = download
+            collections_downloaded += 1
+            with ZipFile(archive) as zf:
+                members = [
+                    member for member in safe_zip_members(zf)
+                    if member.filename.casefold().endswith(".xml")
+                ]
+            if smoke_test:
+                members = members[:SMOKE_XML_PER_COLLECTION]
+            xml_seen = len(members)
+            with ProcessPoolExecutor(
+                max_workers=DISCOVERY_WORKERS,
+                initializer=_open_discovery_archive,
+                initargs=(archive,),
+            ) as discovery_pool:
+                batch_size = max(DISCOVERY_WORKERS * 4, 1)
+                for offset in range(0, xml_seen, batch_size):
+                    batch = members[offset:offset + batch_size]
+                    payloads = [
+                        (name, params["formatoRichiesta"], member.filename)
+                        for member in batch
                     ]
-                    if smoke_test:
-                        members = members[:SMOKE_XML_PER_COLLECTION]
-                    xml_seen = len(members)
-                    batch_size = max(DISCOVERY_WORKERS * 4, 1)
-                    for offset in range(0, xml_seen, batch_size):
-                        batch = members[offset:offset + batch_size]
-                        payloads = [
-                            (
-                                name,
-                                params["formatoRichiesta"],
-                                f"{name}/{member.filename}",
-                                zf.read(member),
-                            )
-                            for member in batch
-                        ]
-                        results = discovery_pool.map(_discover_payload, payloads)
-                        for member, raw, (candidate, partial_report) in zip(
-                            batch, (payload[3] for payload in payloads), results, strict=True
-                        ):
-                            _merge_discovery_report(report, partial_report)
-                            if candidate:
-                                retain([candidate])
-                            elif dry_run:
-                                source = f"{name}/{member.filename}"
-                                rejected_dir = root / "rejected"
-                                rejected_dir.mkdir(exist_ok=True)
-                                digest = hashlib.sha256(source.encode()).hexdigest()
-                                path = rejected_dir / f"{digest}.xml"
-                                path.write_bytes(raw)
-                                rejected.append({
-                                    "collection": name,
-                                    "source": member.filename,
-                                    "path": path.relative_to(root).as_posix(),
-                                    "error": partial_report.errors[-1].message,
-                                })
-                archive.unlink()
-                logger.info(
-                    "Collection %d/%d done name=%r format=%s cache_hit=%s xml=%d elapsed=%.2fs",
-                    number, len(collections), name, params["formatoRichiesta"],
-                    str(cache_hit).lower(), xml_seen, time.perf_counter() - collection_started,
-                )
+                    results = discovery_pool.map(_discover_member, payloads, chunksize=8)
+                    for member, (candidate, partial_report, rejected_raw) in zip(
+                        batch, results, strict=True
+                    ):
+                        _merge_discovery_report(report, partial_report)
+                        if candidate:
+                            retain([candidate])
+                        elif dry_run:
+                            assert rejected_raw is not None
+                            source = f"{name}/{member.filename}"
+                            rejected_dir = root / "rejected"
+                            rejected_dir.mkdir(exist_ok=True)
+                            digest = hashlib.sha256(source.encode()).hexdigest()
+                            path = rejected_dir / f"{digest}.xml"
+                            path.write_bytes(rejected_raw)
+                            rejected.append({
+                                "collection": name,
+                                "source": member.filename,
+                                "path": path.relative_to(root).as_posix(),
+                                "error": partial_report.errors[-1].message,
+                            })
+            archive.unlink()
+            logger.info(
+                "Collection %d/%d done name=%r format=%s cache_hit=%s xml=%d elapsed=%.2fs",
+                number, len(collections), name, params["formatoRichiesta"],
+                str(cache_hit).lower(), xml_seen, time.perf_counter() - collection_started,
+            )
 
         if rejected:
             (root / "rejected" / "index.json").write_text(
