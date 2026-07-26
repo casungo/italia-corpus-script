@@ -144,32 +144,45 @@ def _download(params: dict, destination: Path, cache: Path | None = None) -> boo
                 params.get("nome"), params.get("formatoRichiesta"), time.perf_counter() - started,
             )
             return True
+    partial = cache.with_suffix(cache.suffix + ".partial") if cache else destination
+    partial.parent.mkdir(parents=True, exist_ok=True)
     last_error: Exception | None = None
     for attempt in range(1, DOWNLOAD_MAX_ATTEMPTS + 1):
         try:
-            with requests.get(ENDPOINT_URL, params=params, headers=HEADERS,
+            offset = partial.stat().st_size if partial.exists() else 0
+            headers = HEADERS | ({"Range": f"bytes={offset}-"} if offset else {})
+            with requests.get(ENDPOINT_URL, params=params, headers=headers,
                               timeout=DOWNLOAD_TIMEOUT, stream=True) as response:
                 response.raise_for_status()
-                with destination.open("wb") as stream:
+                resumed = offset > 0 and getattr(response, "status_code", 200) == 206
+                if resumed and not response.headers.get("Content-Range", "").startswith(
+                    f"bytes {offset}-"
+                ):
+                    raise ValueError("invalid range response")
+                with partial.open("ab" if resumed else "wb") as stream:
                     for chunk in response.iter_content(8 * 1024 * 1024):
                         stream.write(chunk)
-            if destination.stat().st_size == 0:
-                destination.unlink()
+            if partial.stat().st_size == 0:
                 raise ValueError("empty download")
-            digest, members = _verify_zip(destination)
+            digest, members = _verify_zip(partial)
+            shutil.copy2(partial, destination)
             if cache:
                 _cache_zip(cache, destination, params, digest, members)
+            partial.unlink(missing_ok=True)
             logger.info(
-                "Download collection=%r format=%s cache_hit=false attempt=%d elapsed=%.2fs",
-                params.get("nome"), params.get("formatoRichiesta"), attempt,
-                time.perf_counter() - started,
+                "Download collection=%r format=%s cache_hit=false resumed=%s "
+                "attempt=%d elapsed=%.2fs",
+                params.get("nome"), params.get("formatoRichiesta"), str(resumed).lower(),
+                attempt, time.perf_counter() - started,
             )
             return False
-        except (
-            requests.RequestException, OSError, BadZipFile, QualityGateError, ValueError
-        ) as exc:
+        except requests.RequestException as exc:
             last_error = exc
-            destination.unlink(missing_ok=True)
+            if attempt < DOWNLOAD_MAX_ATTEMPTS:
+                time.sleep(DOWNLOAD_RETRY_SLEEP_SEC * attempt)
+        except (OSError, BadZipFile, QualityGateError, ValueError) as exc:
+            last_error = exc
+            partial.unlink(missing_ok=True)
             if attempt < DOWNLOAD_MAX_ATTEMPTS:
                 time.sleep(DOWNLOAD_RETRY_SLEEP_SEC * attempt)
     name = params.get("nome", "unknown collection")

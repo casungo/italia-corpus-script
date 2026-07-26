@@ -355,6 +355,56 @@ def test_download_reuses_only_a_valid_zip_cache(tmp_path: Path, monkeypatch, cap
     assert "format=V cache_hit=true" in caplog.text
 
 
+def test_download_resumes_a_partial_response(tmp_path: Path, monkeypatch) -> None:
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w") as archive:
+        archive.writestr("act.xml", "<xml/>")
+    archive_bytes = payload.getvalue()
+    split = len(archive_bytes) // 2
+    calls = []
+
+    class PartialResponse:
+        status_code = 200
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_content(self, size: int):
+            yield archive_bytes[:split]
+            raise pipeline.requests.ConnectionError("reset")
+
+    class ResumedResponse(PartialResponse):
+        status_code = 206
+        headers = {"Content-Range": f"bytes {split}-{len(archive_bytes) - 1}/{len(archive_bytes)}"}
+
+        def iter_content(self, size: int):
+            yield archive_bytes[split:]
+
+    def fake_get(*args, **kwargs):
+        calls.append(kwargs["headers"])
+        return PartialResponse() if len(calls) == 1 else ResumedResponse()
+
+    monkeypatch.setattr(pipeline, "DOWNLOAD_MAX_ATTEMPTS", 2)
+    monkeypatch.setattr(pipeline, "DOWNLOAD_RETRY_SLEEP_SEC", 0)
+    monkeypatch.setattr(pipeline.requests, "get", fake_get)
+    destination = tmp_path / "download.zip"
+    cache = tmp_path / "cache.zip"
+
+    assert pipeline._download(
+        {"nome": "Resumable", "formatoRichiesta": "V"}, destination, cache
+    ) is False
+    assert calls[1]["Range"] == f"bytes={split}-"
+    assert destination.read_bytes() == archive_bytes
+    assert not cache.with_suffix(".zip.partial").exists()
+
+
 def test_download_discards_cache_when_checksum_inventory_mismatches(
     tmp_path: Path, monkeypatch
 ) -> None:
