@@ -35,8 +35,12 @@ from .snapshot import (
 from .supplemental import fetch_missing_sources
 
 HEADERS = {
-    "User-Agent": "italia-corpus/2 (+https://github.com/ahmeabd/italia-corpus-script)",
-    "Accept": "application/zip,application/octet-stream",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Origin": "https://dati.normattiva.it",
 }
 SMOKE_XML_PER_COLLECTION = 1_000
 CACHE_INVENTORY = "inventory.json"
