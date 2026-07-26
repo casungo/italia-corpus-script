@@ -69,8 +69,10 @@ Gli ZIP validi vengono conservati per nome, formato e `dataCreazione` upstream. 
 un checksum SHA-256 ed è registrato in `inventory.json`; prima del riuso vengono verificati
 checksum, inventario e CRC di tutti i membri. Un retry dello stesso snapshot riusa quindi solo
 pacchetti integri della medesima edizione; `--download-cache` permette di collocare esplicitamente
-questa cache fuori dalla directory di lavoro. I log riportano avanzamento per collezione, formato
-effettivo, cache hit/miss, XML letti e tempi.
+questa cache fuori dalla directory di lavoro. Il workflow `Corpus snapshots` conserva la cache
+anche dopo un tentativo fallito; un dispatch manuale con `publish` disattivato esegue una full
+dry-run, mentre il flag attivo pubblica solo dopo tutti i quality gate. I log riportano avanzamento
+per collezione, formato effettivo, cache hit/miss, XML letti e tempi.
 
 ## CLI per gli utenti
 
