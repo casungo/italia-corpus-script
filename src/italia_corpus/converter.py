@@ -11,7 +11,10 @@ import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .akn import AKN_NS, AknFrontmatter, akn_xml_to_markdown, extract_frontmatter, parse_akn_xml
+from .akn import (
+    AKN_NS, AknFrontmatter, akn_xml_to_markdown, count_akn_articles, extract_frontmatter,
+    parse_akn_xml,
+)
 
 _ILLEGAL_XML10 = re.compile(rb"[\x00-\x08\x0B\x0C\x0E-\x1F]")
 _FORMAT_RANK = {"V": 0, "M": 1, "O": 2}
@@ -146,9 +149,7 @@ def discover_candidate(
             raise ValueError("missing URN")
         if not metadata.codice_redazionale:
             raise ValueError("missing codice_redazionale")
-        article_count = sum(
-            1 for element in xml_root.iter() if element.tag.rsplit("}", 1)[-1] == "article"
-        )
+        article_count = count_akn_articles(xml_root)
         return Candidate(
             Path(source), collection, source_format, metadata, content, article_count, source
         )

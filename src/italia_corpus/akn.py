@@ -11,6 +11,7 @@ from .refs import RefContext, resolve_ref
 AKN_NS = "http://docs.oasis-open.org/legaldocml/ns/akn/3.0"
 ELI_NS = "http://data.europa.eu/eli/ontology#"
 NS = {"akn": AKN_NS, "eli": ELI_NS}
+_ATTACHED_ARTICLE = re.compile(r"^(?P<title>.+)-art\.\s*(?P<number>.+)$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,24 @@ class RenderStats:
 
 def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
+
+
+def attached_article(el: ET.Element) -> tuple[str, str] | None:
+    """Return the anchor and label for Normattiva's one-doc-per-article layout."""
+    if _local(el.tag) != "doc" or el.find(f".//{{{AKN_NS}}}article") is not None:
+        return None
+    match = _ATTACHED_ARTICLE.match(el.get("name", ""))
+    if not match:
+        return None
+    title, number = match.group("title", "number")
+    anchor = f"art-{_slug(number)}"
+    if not title.casefold().startswith("codice "):
+        anchor = f"{_slug(title)}-{anchor}"
+    return anchor, f"Art. {number}"
+
+
+def count_akn_articles(root: ET.Element) -> int:
+    return sum(_local(el.tag) == "article" or attached_article(el) is not None for el in root.iter())
 
 
 def _text(el: ET.Element | None) -> str | None:
@@ -230,6 +249,13 @@ def _render_block(el: ET.Element, lines: list[str], ctx: RefContext, stats: Rend
     if tag == "table":
         _render_table(el, lines, ctx, stats)
         return
+    if attached := attached_article(el):
+        anchor, title = attached
+        lines.extend([_anchor_tag(anchor, None, None, "article"), f"{'#' * min(level, 6)} {title}", ""])
+        stats.articles += 1
+        stats.article_intervals.append(
+            {"anchor": anchor, "valid_from": None, "valid_to": None}
+        )
     if tag in _HEADINGS:
         anchor = _anchor(el, ancestors)
         valid_from, valid_to = _validity(el, intervals or {})

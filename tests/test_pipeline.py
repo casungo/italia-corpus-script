@@ -50,6 +50,17 @@ def test_codes_include_substantive_attached_articles() -> None:
     assert "Capacità giuridica" in civil and stats.articles == 2
 
 
+def test_normattiva_doc_attachments_are_articles() -> None:
+    source = """<akomaNtoso xmlns="http://docs.oasis-open.org/legaldocml/ns/akn/3.0">
+      <act><attachments><attachment><doc name="Codice Penale-art. 575">
+        <mainBody><p>Chiunque cagiona la morte.</p></mainBody>
+      </doc></attachment></attachments></act>
+    </akomaNtoso>"""
+    _, markdown, stats = akn_xml_to_markdown(source, {}, "atti/030U1398.md")
+    assert '<a id="art-575" data-akn-name="article"></a>' in markdown
+    assert stats.articles == 1
+
+
 def test_two_pass_output_is_order_independent(tmp_path: Path) -> None:
     roots = [("zeta", "O", FIXTURES), ("alfa", "V", FIXTURES)]
     outputs = []
