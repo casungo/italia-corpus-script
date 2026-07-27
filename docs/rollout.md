@@ -1,4 +1,4 @@
-# Rollout snapshot v3
+# Rollout snapshot v4
 
 Il rollout operativo usa quattro gate, tutti ripetibili sullo stesso codice:
 
@@ -7,7 +7,7 @@ Il rollout operativo usa quattro gate, tutti ripetibili sullo stesso codice:
 3. snapshot mensile completo, validazione e artifact;
 4. pubblicazione atomica di commit, tag e release dopo il caricamento degli artifact.
 
-La prima pubblicazione v3 include `legacy-corpus.tar.zst` se il branch del corpus contiene ancora
+La prima pubblicazione v4 include `legacy-corpus.tar.zst` se il branch del corpus contiene ancora
 le vecchie directory per collezione. Solo dopo aver creato questo archivio la pipeline sostituisce
 quelle directory con `atti/`, `collections/`, manifest e indici. Le release successive non
 rigenerano l'archivio perché le directory legacy non esistono più.

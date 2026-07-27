@@ -16,7 +16,8 @@ import pytest
 
 from italia_corpus.akn import AKN_NS, akn_xml_to_markdown
 from italia_corpus.converter import (
-    ConversionReport, discover_candidate, discover_candidates, render_candidates, select_canonical,
+    ConversionError, ConversionReport, discover_candidate, discover_candidates, render_candidates,
+    select_canonical,
 )
 from italia_corpus.cli import main as cli_main
 from italia_corpus import __main__ as pipeline_cli
@@ -107,7 +108,7 @@ def test_temporal_attachment_abrogation_and_deep_lists_golden() -> None:
     assert '<a id="art-1-v2" data-akn-name="article" data-valid-from="2022-01-01"></a>' in markdown
     assert "Testo abrogato" in markdown and "Livello tre" in markdown
     assert "Contenuto allegato" in markdown
-    assert "schema_version: 3" in markdown
+    assert "schema_version: 4" in markdown
     assert stats.article_intervals[:2] == [
         {"anchor": "art-1", "valid_from": "2020-01-01", "valid_to": "2022-01-01"},
         {"anchor": "art-1-v2", "valid_from": "2022-01-01", "valid_to": None},
@@ -169,23 +170,59 @@ def test_base64_payload_is_decoded_only_when_it_is_valid_akn() -> None:
     assert report.errors[0].message == "source payload is exactly 1 MiB and appears truncated"
 
 
-def test_code_collision_reports_both_sources() -> None:
+def test_code_collision_keeps_both_urns_at_stable_paths(tmp_path: Path) -> None:
     report = ConversionReport()
+    source = (FIXTURES / "codice_civile.xml").read_bytes()
     first = discover_candidate(
-        "A", "V", "first.xml", (FIXTURES / "codice_civile.xml").read_bytes(), report
+        "A", "V", "first.xml", source, report
     )
-    assert first is not None
-    second = replace(first, metadata=replace(first.metadata, urn="urn:nir:stato:legge:2000;1"),
-                     source="second.xml")
+    assert first is not None and first.metadata.urn
+    second_urn = b"urn:nir:stato:legge:2000;1"
+    second = discover_candidate(
+        "A", "V", "second.xml", source.replace(first.metadata.urn.encode(), second_urn), report
+    )
+    assert second is not None
     chosen = select_canonical([first, second], report)
-    assert chosen == []
-    assert "first.xml <> second.xml" in report.errors[-1].source
+    assert {candidate.metadata.urn for candidate in chosen} == {
+        first.metadata.urn, second.metadata.urn,
+    }
+    assert len({candidate.repo_path for candidate in chosen}) == 2
+    assert all(candidate.repo_path.startswith("atti/042U0262-") for candidate in chosen)
+    assert report.errors == []
+    render_candidates(chosen, tmp_path, report)
+    index = write_indexes(tmp_path, chosen, report, 1, 1)
+    build_sqlite(tmp_path, tmp_path / "corpus.sqlite")
+    assert index["counts"]["acts"] == 2
+    urn_index = json.loads((tmp_path / "urn-index.json").read_text())
+    assert len(urn_index["by_codice_redazionale"]["042U0262"]) == 2
 
 
 def test_quality_gate_is_fail_closed() -> None:
     report = ConversionReport(xml_received=2, converted=1, skipped=1, urns=1, editorial_codes=1)
     with pytest.raises(QualityGateError):
         validate_report(report)
+
+
+def test_quality_gate_requires_exact_aggregate_exception_count(tmp_path: Path) -> None:
+    exceptions = tmp_path / "exceptions.json"
+    exceptions.write_text(json.dumps([{
+        "metric": "invalid_xml",
+        "collection": "Regi decreti",
+        "expected_value": 2,
+        "message": "appears truncated",
+        "reason": "upstream defect",
+        "expires": "2999-01-01",
+    }]))
+    report = ConversionReport(xml_received=3, converted=1, skipped=2, urns=1, editorial_codes=1)
+    for source in ("one.xml", "two.xml"):
+        report.errors.append(ConversionError(
+            source, "source payload appears truncated", "Regi decreti", "invalid_xml"
+        ))
+    validate_report(report, exceptions_path=exceptions)
+    report.errors.pop()
+    report.skipped = 1
+    with pytest.raises(QualityGateError):
+        validate_report(report, exceptions_path=exceptions)
 
 
 def test_manifest_and_sqlite(tmp_path: Path) -> None:
@@ -202,7 +239,7 @@ def test_manifest_and_sqlite(tmp_path: Path) -> None:
     assert manifest["counts"]["acts"] == len(candidates)
     index = json.loads((tmp_path / "urn-index.json").read_text())
     assert index["schema_version"] == SCHEMA_VERSION
-    assert index["by_codice_redazionale"]["030U1398"]["urn"].endswith(";1398")
+    assert index["by_codice_redazionale"]["030U1398"][0]["urn"].endswith(";1398")
     assert manifest["by_collection"]["codes"]["converted"] == len(candidates)
     assert cli_main(["get", "--urn", "urn:nir:stato:regio.decreto:1930-10-19;1398", "--database", str(database)]) == 0
     assert cli_main(["search", "omicidio", "--database", str(database)]) == 0

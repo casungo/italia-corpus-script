@@ -101,7 +101,8 @@ def _verify(args: argparse.Namespace) -> int:
             failures.append("urn index schema")
         for urn, document in documents.items():
             code = document.get("codice_redazionale")
-            if not code or codes.get(code) != {"path": document.get("path"), "urn": urn}:
+            reference = {"path": document.get("path"), "urn": urn}
+            if not code or reference not in codes.get(code, []):
                 failures.append(f"index reference: {urn}")
     if not database.is_file():
         failures.append("corpus.sqlite missing")

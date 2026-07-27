@@ -123,7 +123,7 @@ def extract_frontmatter(root: ET.Element, source_format: str = "V") -> AknFrontm
 
 def format_frontmatter(fm: AknFrontmatter) -> str:
     values: list[tuple[str, str | bool | None]] = [
-        ("schema_version", "3"), ("tipo", fm.tipo), ("numero", fm.numero),
+        ("schema_version", "4"), ("tipo", fm.tipo), ("numero", fm.numero),
         ("data", fm.data), ("titolo", fm.titolo), ("urn", fm.urn),
         ("codice_redazionale", fm.codice_redazionale),
         ("stato_atto", fm.stato_atto), ("versione_data", fm.versione_data),

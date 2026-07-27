@@ -16,7 +16,7 @@ from zipfile import ZipFile, ZipInfo
 
 from .converter import Candidate, ConversionReport
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class QualityGateError(RuntimeError):
@@ -78,13 +78,35 @@ def _error_is_allowed(rows: list[dict], metric: str, collection: str, source: st
     )
 
 
+def _allowed_error_indexes(rows: list[dict], errors: list) -> set[int]:
+    allowed = {
+        index for index, error in enumerate(errors)
+        if _error_is_allowed(rows, error.metric, error.collection, error.source)
+    }
+    for row in rows:
+        expected = row.get("expected_value")
+        message = row.get("message")
+        if not isinstance(expected, int) or not message:
+            continue
+        matches = {
+            index for index, error in enumerate(errors)
+            if error.metric == row.get("metric")
+            and error.collection == row.get("collection")
+            and message in error.message
+        }
+        if len(matches) == expected:
+            allowed.update(matches)
+    return allowed
+
+
 def validate_report(report: ConversionReport, previous: dict | None = None,
                     exceptions_path: Path | None = None) -> None:
     allowed = _allowed_regressions(exceptions_path)
     failures: list[str] = []
+    allowed_error_indexes = _allowed_error_indexes(allowed, report.errors)
     unallowed = [
-        error for error in report.errors
-        if not _error_is_allowed(allowed, error.metric, error.collection, error.source)
+        error for index, error in enumerate(report.errors)
+        if index not in allowed_error_indexes
     ]
     accounted_skips = sum(
         1 for error in report.errors if error.metric in {"invalid_xml", "render_error"}
@@ -159,7 +181,7 @@ def write_indexes(output: Path, candidates: list[Candidate], report: ConversionR
     type_counts: Counter[str] = Counter()
     year_counts: Counter[str] = Counter()
     urn_index: dict[str, dict[str, str]] = {}
-    code_index: dict[str, dict[str, str]] = {}
+    code_index: dict[str, list[dict[str, str]]] = {}
     for candidate in candidates:
         urn = candidate.metadata.urn or ""
         memberships.setdefault(candidate.collection, set()).add(urn)
@@ -169,10 +191,10 @@ def write_indexes(output: Path, candidates: list[Candidate], report: ConversionR
             "path": candidate.repo_path,
             "codice_redazionale": candidate.metadata.codice_redazionale or "",
         }
-        code_index[candidate.metadata.codice_redazionale or ""] = {
+        code_index.setdefault(candidate.metadata.codice_redazionale or "", []).append({
             "path": candidate.repo_path,
             "urn": urn,
-        }
+        })
     collections_dir = output / "collections"
     collections_dir.mkdir(exist_ok=True)
     for name, urns in sorted(memberships.items()):
@@ -238,7 +260,7 @@ def build_sqlite(snapshot: Path, destination: Path) -> None:
     try:
         connection.executescript("""
             CREATE TABLE documents (
-              urn TEXT PRIMARY KEY, codice_redazionale TEXT UNIQUE NOT NULL,
+              urn TEXT PRIMARY KEY, codice_redazionale TEXT NOT NULL,
               tipo TEXT, data TEXT, titolo TEXT, stato_atto TEXT,
               valid_from TEXT, valid_to TEXT, path TEXT NOT NULL, text TEXT NOT NULL
             );

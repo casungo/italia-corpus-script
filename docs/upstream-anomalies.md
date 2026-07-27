@@ -1,21 +1,19 @@
 # Anomalie upstream Normattiva
 
-Verifica del 21 luglio 2026 sui nomi dei file restituiti dalle collezioni ufficiali
-Normattiva. Queste anomalie non vengono risolte scegliendo il primo documento: tutte le identità
-coinvolte restano escluse finché il codice redazionale ufficiale non è univoco.
+Verifica aggiornata al 27 luglio 2026 sui file restituiti dalle collezioni ufficiali Normattiva.
 
 ## XML troncati
 
-La collezione `Regi decreti` ha restituito 11 payload lunghi esattamente 1 MiB. Non sono XML
-completi e restano nella quarantena del dry-run. I codici coinvolti sono: `091U0260`, `008U0150`,
-`011U1413`, `026U0596`, `029U0062`, `030U1629`, `013U0453`, `034U0383`, `030U1643`,
-`040U1077` e `065U2641`.
+La collezione `Regi decreti` ha restituito 72 payload lunghi esattamente 1 MiB. Non sono XML
+completi e restano in quarantena. L'eccezione scade il 31 agosto 2026 ed è valida solo se classe,
+collezione, messaggio e conteggio corrispondono esattamente.
 
 ## Collisioni dei codici redazionali
 
-In ciascuna riga entrambi i file ufficiali dichiarano lo stesso `eli:id_local`, ma le directory e
-le URN identificano atti diversi. Il codice non è quindi utilizzabile come chiave canonica senza
-una correzione upstream.
+Il corpus completo dimostra che `eli:id_local` non è una chiave globale: migliaia di codici
+identificano URN diverse, anche per atti separati da un secolo. La URN è quindi la chiave
+canonica; quando un codice è ambiguo entrambi gli atti vengono conservati con un suffisso di
+percorso stabile e l'indice del codice contiene tutte le corrispondenze.
 
 | Codice | Prima URN | Seconda URN |
 | --- | --- | --- |

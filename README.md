@@ -9,7 +9,8 @@ Ogni esecuzione completa tutte le collezioni prima di modificare il repository:
 1. scarica e apre gli ZIP con protezione da path traversal e symlink;
 2. estrae i metadati di tutti gli XML;
 3. sceglie deterministicamente un documento canonico per URN;
-4. costruisce l'indice globale e renderizza `atti/<codice_redazionale>.md`;
+4. costruisce l'indice globale e renderizza `atti/<codice_redazionale>.md`, aggiungendo un
+   suffisso stabile derivato dalla URN quando Normattiva riutilizza lo stesso codice;
 5. genera manifest, indici, delta e artifact;
 6. applica i quality gate e pubblica un solo commit, tag e release.
 
@@ -19,10 +20,10 @@ Gli atti fondamentali segnalati nelle issue #2 e #3 hanno gate dedicati. Se DPR 
 
 ## Formato
 
-Il frontmatter v3 espone lo stato temporale dell'atto e gli articoli riportano intervalli risolti:
+Il frontmatter v4 espone lo stato temporale dell'atto e gli articoli riportano intervalli risolti:
 
 ```yaml
-schema_version: 3
+schema_version: 4
 urn: urn:nir:stato:decreto.legislativo:2003-06-30;196
 codice_redazionale: 003G0218
 stato_atto: vigente
@@ -33,7 +34,10 @@ fonte_versione: vigente
 vigente: true # compatibilità, deprecato
 ```
 
-`manifest.json` è la fonte dei conteggi pubblici, inclusi quelli in `by_collection`. `collections/*.json` descrive l'appartenenza logica alle collezioni; `urn-index.json` risolve sia URN sia codice redazionale verso il percorso canonico. `corpus.sqlite` espone gli intervalli interrogabili nella tabella `articles`.
+`manifest.json` è la fonte dei conteggi pubblici, inclusi quelli in `by_collection`.
+`collections/*.json` descrive l'appartenenza logica alle collezioni; `urn-index.json` risolve ogni
+URN verso il percorso canonico e ogni codice redazionale verso uno o più atti. `corpus.sqlite`
+espone gli intervalli interrogabili nella tabella `articles`.
 
 ## Artifact della release
 
@@ -94,4 +98,4 @@ python -m ruff check .
 python -m mypy
 ```
 
-La CI esegue parser, golden multi-collezione, sicurezza ZIP, riproducibilità, manifest, SQLite e controlli statici su Linux e Windows, oltre ad audit delle dipendenze e secret scanning. Il workflow snapshot esegue uno smoke globale giornaliero e una pubblicazione completa mensile; il rollout v3 e la transizione dal layout legacy sono descritti in `docs/rollout.md`.
+La CI esegue parser, golden multi-collezione, sicurezza ZIP, riproducibilità, manifest, SQLite e controlli statici su Linux e Windows, oltre ad audit delle dipendenze e secret scanning. Il workflow snapshot esegue uno smoke globale giornaliero e una pubblicazione completa mensile; il rollout v4 e la transizione dal layout legacy sono descritti in `docs/rollout.md`.

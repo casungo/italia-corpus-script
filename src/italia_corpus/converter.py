@@ -8,7 +8,7 @@ import hashlib
 import os
 import re
 import xml.etree.ElementTree as ET
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 from .akn import (
@@ -30,10 +30,11 @@ class Candidate:
     content: str
     source_articles: int
     source: str = ""
+    path_suffix: str = ""
 
     @property
     def repo_path(self) -> str:
-        return f"atti/{self.metadata.codice_redazionale}.md"
+        return f"atti/{self.metadata.codice_redazionale}{self.path_suffix}.md"
 
     def rank(self) -> tuple[int, int, str, str]:
         priorities = [
@@ -177,31 +178,24 @@ def discover_candidates(
 
 def select_canonical(candidates: list[Candidate], report: ConversionReport) -> list[Candidate]:
     by_urn: dict[str, list[Candidate]] = {}
-    by_code: dict[str, list[Candidate]] = {}
     for candidate in candidates:
-        code = candidate.metadata.codice_redazionale or ""
-        by_code.setdefault(code, []).append(candidate)
-
-    collisions = {
-        code: group
-        for code, group in by_code.items()
-        if len({candidate.metadata.urn for candidate in group}) > 1
-    }
-    for code, group in sorted(collisions.items()):
-        sources = " <> ".join(candidate.source or str(candidate.xml_path) for candidate in group)
-        urns = " and ".join(sorted({candidate.metadata.urn or "" for candidate in group}))
-        report.errors.append(ConversionError(
-            f"{code}: {sources}", f"editorial code maps to {urns}",
-            "*", "editorial_code_collision",
-        ))
-
-    for candidate in candidates:
-        if (candidate.metadata.codice_redazionale or "") in collisions:
-            continue
         urn = candidate.metadata.urn or ""
         by_urn.setdefault(urn, []).append(candidate)
     report.duplicates = sum(max(0, len(group) - 1) for group in by_urn.values())
-    return [min(group, key=Candidate.rank) for _, group in sorted(by_urn.items())]
+    chosen = [min(group, key=Candidate.rank) for _, group in sorted(by_urn.items())]
+
+    by_code: dict[str, list[Candidate]] = {}
+    for candidate in chosen:
+        by_code.setdefault(candidate.metadata.codice_redazionale or "", []).append(candidate)
+    collisions = {code for code, group in by_code.items() if len(group) > 1}
+    return [
+        replace(
+            candidate,
+            path_suffix=f"-{hashlib.sha256((candidate.metadata.urn or '').encode()).hexdigest()[:12]}",
+        )
+        if (candidate.metadata.codice_redazionale or "") in collisions else candidate
+        for candidate in chosen
+    ]
 
 
 def render_candidates(candidates: list[Candidate], output: Path, report: ConversionReport) -> dict[str, str]:
