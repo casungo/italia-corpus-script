@@ -144,7 +144,14 @@ def _download(params: dict, destination: Path, cache: Path | None = None) -> boo
                 params.get("nome"), params.get("formatoRichiesta"), time.perf_counter() - started,
             )
             return True
-    partial = cache.with_suffix(cache.suffix + ".partial") if cache else destination
+    partial = (
+        cache.parent / (
+            f"{safe_repo_name(str(params.get('nome')))}-"
+            f"{params.get('formatoRichiesta')}.zip.partial"
+        )
+        if cache else destination
+    )
+    partial_metadata = partial.with_suffix(partial.suffix + ".json")
     partial.parent.mkdir(parents=True, exist_ok=True)
     last_error: Exception | None = None
     for attempt in range(1, DOWNLOAD_MAX_ATTEMPTS + 1):
@@ -154,11 +161,32 @@ def _download(params: dict, destination: Path, cache: Path | None = None) -> boo
             with requests.get(ENDPOINT_URL, params=params, headers=headers,
                               timeout=DOWNLOAD_TIMEOUT, stream=True) as response:
                 response.raise_for_status()
+                response_headers = getattr(response, "headers", {})
                 resumed = offset > 0 and getattr(response, "status_code", 200) == 206
-                if resumed and not response.headers.get("Content-Range", "").startswith(
+                if resumed and not response_headers.get("Content-Range", "").startswith(
                     f"bytes {offset}-"
                 ):
                     raise ValueError("invalid range response")
+                if resumed and cache:
+                    try:
+                        previous = json.loads(partial_metadata.read_text(encoding="utf-8"))
+                    except (OSError, ValueError):
+                        previous = {}
+                    current_etag = response_headers.get("X-ETag") or response_headers.get("ETag")
+                    if (
+                        previous.get("edition") != cache.name
+                        and (not current_etag or current_etag != previous.get("etag"))
+                    ):
+                        raise ValueError("partial download belongs to a different archive")
+                    partial_metadata.write_text(json.dumps({
+                        "edition": cache.name,
+                        "etag": current_etag,
+                    }), encoding="utf-8")
+                elif cache:
+                    partial_metadata.write_text(json.dumps({
+                        "edition": cache.name,
+                        "etag": response_headers.get("X-ETag") or response_headers.get("ETag"),
+                    }), encoding="utf-8")
                 with partial.open("ab" if resumed else "wb") as stream:
                     for chunk in response.iter_content(8 * 1024 * 1024):
                         stream.write(chunk)
@@ -169,6 +197,7 @@ def _download(params: dict, destination: Path, cache: Path | None = None) -> boo
             if cache:
                 _cache_zip(cache, destination, params, digest, members)
             partial.unlink(missing_ok=True)
+            partial_metadata.unlink(missing_ok=True)
             logger.info(
                 "Download collection=%r format=%s cache_hit=false resumed=%s "
                 "attempt=%d elapsed=%.2fs",
@@ -183,6 +212,7 @@ def _download(params: dict, destination: Path, cache: Path | None = None) -> boo
         except (OSError, BadZipFile, QualityGateError, ValueError) as exc:
             last_error = exc
             partial.unlink(missing_ok=True)
+            partial_metadata.unlink(missing_ok=True)
             if attempt < DOWNLOAD_MAX_ATTEMPTS:
                 time.sleep(DOWNLOAD_RETRY_SLEEP_SEC * attempt)
     name = params.get("nome", "unknown collection")

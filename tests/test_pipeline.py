@@ -450,7 +450,58 @@ def test_download_resumes_a_partial_response(tmp_path: Path, monkeypatch) -> Non
     ) is False
     assert calls[1]["Range"] == f"bytes={split}-"
     assert destination.read_bytes() == archive_bytes
-    assert not cache.with_suffix(".zip.partial").exists()
+    assert not (tmp_path / "resumable-V.zip.partial").exists()
+
+
+def test_download_resumes_same_etag_across_upstream_editions(
+    tmp_path: Path, monkeypatch
+) -> None:
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w") as archive:
+        archive.writestr("act.xml", "<xml/>")
+    archive_bytes = payload.getvalue()
+    split = len(archive_bytes) // 2
+    calls = []
+
+    class Response:
+        status_code = 200
+        headers = {"X-ETag": "stable"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_content(self, size: int):
+            yield archive_bytes[:split]
+            raise pipeline.requests.ConnectionError("reset")
+
+    class ResumedResponse(Response):
+        status_code = 206
+        headers = {
+            "X-ETag": "stable",
+            "Content-Range": f"bytes {split}-{len(archive_bytes) - 1}/{len(archive_bytes)}",
+        }
+
+        def iter_content(self, size: int):
+            yield archive_bytes[split:]
+
+    monkeypatch.setattr(pipeline, "DOWNLOAD_MAX_ATTEMPTS", 1)
+    monkeypatch.setattr(pipeline.requests, "get", lambda *args, **kwargs: (
+        calls.append(kwargs["headers"]) or (Response() if len(calls) == 1 else ResumedResponse())
+    ))
+    params = {"nome": "Resumable", "formatoRichiesta": "V"}
+    with pytest.raises(RuntimeError):
+        pipeline._download(params, tmp_path / "first.zip", tmp_path / "cache-2026-07-27.zip")
+    assert pipeline._download(
+        params, tmp_path / "second.zip", tmp_path / "cache-2026-07-28.zip"
+    ) is False
+    assert calls[1]["Range"] == f"bytes={split}-"
+    assert (tmp_path / "second.zip").read_bytes() == archive_bytes
 
 
 def test_download_discards_cache_when_checksum_inventory_mismatches(
