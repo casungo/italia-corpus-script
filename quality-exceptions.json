@@ -6,5 +6,13 @@
     "message": "source payload is exactly 1 MiB and appears truncated",
     "reason": "Normattiva restituisce 72 XML troncati esattamente a 1 MiB; il conteggio deve corrispondere esattamente",
     "expires": "2026-08-31"
+  },
+  {
+    "metric": "invalid_xml",
+    "collection": "Regi decreti",
+    "expected_value": 11,
+    "message": "source payload is exactly 1 MiB and appears truncated",
+    "reason": "Lo smoke test limitato ai primi 1000 XML incontra esattamente 11 dei 72 payload troncati",
+    "expires": "2026-08-31"
   }
 ]

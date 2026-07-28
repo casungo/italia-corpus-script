@@ -6,7 +6,8 @@ Verifica aggiornata al 27 luglio 2026 sui file restituiti dalle collezioni uffic
 
 La collezione `Regi decreti` ha restituito 72 payload lunghi esattamente 1 MiB. Non sono XML
 completi e restano in quarantena. L'eccezione scade il 31 agosto 2026 ed è valida solo se classe,
-collezione, messaggio e conteggio corrispondono esattamente.
+collezione, messaggio e conteggio corrispondono esattamente: 72 nel corpus completo e 11 nel
+campione smoke dei primi 1.000 XML.
 
 ## Collisioni dei codici redazionali
 
