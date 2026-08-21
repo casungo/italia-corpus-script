@@ -5,13 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 import time
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import nullcontext
-from pathlib import Path
-from zipfile import BadZipFile, ZipFile
+from pathlib import Path, PurePosixPath
+from zipfile import BadZipFile, ZipFile, ZipInfo
 
 import requests
 from github import Github
@@ -21,8 +22,8 @@ from .config import (
     GIT_AUTHOR_EMAIL, GIT_AUTHOR_NAME, GITHUB_USERNAME, TARGET_REPO_NAME, logger,
 )
 from .converter import (
-    Candidate, ConversionReport, discover_candidate, discover_candidates, render_candidates,
-    select_canonical,
+    UPSTREAM_TRUNCATION_ERROR, Candidate, ConversionReport, discover_candidate,
+    discover_candidates, render_candidates, select_canonical,
 )
 from .filename import collection_subdir_name, safe_repo_name
 from .git_ops import git, push_snapshot, rollback_snapshot, stage_snapshot
@@ -42,6 +43,9 @@ HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "Origin": "https://dati.normattiva.it",
 }
+NORMATTIVA_DETAIL_URL = "https://www.normattiva.it/atto/caricaDettaglioAtto"
+NORMATTIVA_AKN_URL = "https://www.normattiva.it/do/atto/caricaAKN"
+_MEMBER_ID = re.compile(r"^(\d{4}-\d{2}-\d{2})_([0-9A-Z]+)_")
 SMOKE_XML_PER_COLLECTION = 1_000
 CACHE_INVENTORY = "inventory.json"
 DISCOVERY_WORKERS = min(8, max(1, (os.cpu_count() or 1) * 2))
@@ -297,6 +301,60 @@ def _merge_discovery_report(target: ConversionReport, source: ConversionReport) 
             target.increment(collection, metric, amount)
 
 
+def _member_id(source: str) -> tuple[str, str]:
+    match = _MEMBER_ID.match(PurePosixPath(source).name)
+    if not match:
+        raise ValueError(f"cannot identify Normattiva act from {source!r}")
+    return match.group(1), match.group(2)
+
+
+def _fetch_direct_akn(session: requests.Session, source: str, coverage_date: str) -> bytes:
+    publication_date, editorial_code = _member_id(source)
+    detail = session.get(NORMATTIVA_DETAIL_URL, params={
+        "atto.dataPubblicazioneGazzetta": publication_date,
+        "atto.codiceRedazionale": editorial_code,
+        "atto.articolo.numero": "0",
+        "atto.articolo.sottoArticolo": "1",
+        "atto.articolo.sottoArticolo1": "0",
+    }, timeout=DOWNLOAD_TIMEOUT)
+    detail.raise_for_status()
+    response = session.get(NORMATTIVA_AKN_URL, params={
+        "dataGU": publication_date.replace("-", ""),
+        "codiceRedaz": editorial_code,
+        "dataVigenza": coverage_date.replace("-", ""),
+    }, headers={"Referer": detail.url}, timeout=DOWNLOAD_TIMEOUT)
+    response.raise_for_status()
+    return response.content
+
+
+def _recover_truncated_member(
+    session: requests.Session,
+    collection: str,
+    source: str,
+    coverage_date: str,
+) -> tuple[Candidate, ConversionReport] | None:
+    last_error = "invalid AKN payload"
+    expected_code = _member_id(source)[1]
+    for attempt in range(1, DOWNLOAD_MAX_ATTEMPTS + 1):
+        try:
+            report = ConversionReport()
+            raw = _fetch_direct_akn(session, source, coverage_date)
+            candidate = discover_candidate(collection, "V", f"{collection}/direct/{source}", raw, report)
+            if candidate and candidate.metadata.codice_redazionale == expected_code:
+                return candidate, report
+            last_error = (
+                report.errors[-1].message
+                if report.errors
+                else f"direct AKN identity mismatch for {expected_code}"
+            )
+        except (requests.RequestException, ValueError) as exc:
+            last_error = str(exc)
+        if attempt < DOWNLOAD_MAX_ATTEMPTS:
+            time.sleep(DOWNLOAD_RETRY_SLEEP_SEC * attempt)
+    logger.warning("Direct AKN recovery failed for %s: %s", source, last_error)
+    return None
+
+
 def _stage_release(repo, tag: str, artifacts: list[Path]):
     release = repo.create_git_release(tag=tag, name=tag, message="Validated Italia Corpus snapshot", draft=True)
     try:
@@ -395,6 +453,27 @@ def extract_and_push(
                 continue
             params, cache_hit = download
             collections_downloaded += 1
+            pending_truncations: list[tuple[ZipInfo, ConversionReport]] = []
+
+            def reject(
+                member: ZipInfo, partial_report: ConversionReport, raw: bytes | None
+            ) -> None:
+                if not dry_run:
+                    return
+                assert raw is not None
+                source = f"{name}/{member.filename}"
+                rejected_dir = root / "rejected"
+                rejected_dir.mkdir(exist_ok=True)
+                digest = hashlib.sha256(source.encode()).hexdigest()
+                path = rejected_dir / f"{digest}.xml"
+                path.write_bytes(raw)
+                rejected.append({
+                    "collection": name,
+                    "source": member.filename,
+                    "path": path.relative_to(root).as_posix(),
+                    "error": partial_report.errors[-1].message,
+                })
+
             with ZipFile(archive) as zf:
                 members = [
                     member for member in safe_zip_members(zf)
@@ -419,23 +498,44 @@ def extract_and_push(
                     for member, (candidate, partial_report, rejected_raw) in zip(
                         batch, results, strict=True
                     ):
-                        _merge_discovery_report(report, partial_report)
                         if candidate:
+                            _merge_discovery_report(report, partial_report)
                             retain([candidate])
-                        elif dry_run:
+                        elif (
+                            partial_report.errors[-1].message == UPSTREAM_TRUNCATION_ERROR
+                        ):
+                            pending_truncations.append((member, partial_report))
+                        else:
+                            _merge_discovery_report(report, partial_report)
                             assert rejected_raw is not None
-                            source = f"{name}/{member.filename}"
-                            rejected_dir = root / "rejected"
-                            rejected_dir.mkdir(exist_ok=True)
-                            digest = hashlib.sha256(source.encode()).hexdigest()
-                            path = rejected_dir / f"{digest}.xml"
-                            path.write_bytes(rejected_raw)
-                            rejected.append({
-                                "collection": name,
-                                "source": member.filename,
-                                "path": path.relative_to(root).as_posix(),
-                                "error": partial_report.errors[-1].message,
-                            })
+                            reject(member, partial_report, rejected_raw)
+            if pending_truncations:
+                recovered_count = 0
+                with requests.Session() as session, ZipFile(archive) as primary_archive:
+                    session.headers["User-Agent"] = HEADERS["User-Agent"]
+                    for member, partial_report in pending_truncations:
+                        fallback = _recover_truncated_member(
+                            session,
+                            name,
+                            member.filename,
+                            str(collection.get("dataCreazione") or ""),
+                        )
+                        if fallback:
+                            candidate, fallback_report = fallback
+                            _merge_discovery_report(report, fallback_report)
+                            retain([candidate])
+                            recovered_count += 1
+                        else:
+                            _merge_discovery_report(report, partial_report)
+                            reject(
+                                member,
+                                partial_report,
+                                primary_archive.read(member) if dry_run else None,
+                            )
+                logger.info(
+                    "Recovered %d/%d truncated payloads from direct AKN export for %r",
+                    recovered_count, len(pending_truncations), name,
+                )
             archive.unlink()
             logger.info(
                 "Collection %d/%d done name=%r format=%s cache_hit=%s xml=%d elapsed=%.2fs",

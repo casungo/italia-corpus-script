@@ -43,6 +43,8 @@ def safe_extract_zip(zf: ZipFile, destination: Path) -> None:
     for member in members:
         path = PurePosixPath(member.filename.replace("\\", "/"))
         target = (root / Path(*path.parts)).resolve()
+        if not target.is_relative_to(root):
+            raise QualityGateError(f"unsafe ZIP member: {member.filename!r}")
         if member.is_dir():
             target.mkdir(parents=True, exist_ok=True)
         else:

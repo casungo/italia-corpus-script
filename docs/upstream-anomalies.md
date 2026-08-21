@@ -1,13 +1,13 @@
 # Anomalie upstream Normattiva
 
-Verifica aggiornata al 27 luglio 2026 sui file restituiti dalle collezioni ufficiali Normattiva.
+Verifica aggiornata al 10 agosto 2026 sui file restituiti dalle collezioni ufficiali Normattiva.
 
 ## XML troncati
 
-La collezione `Regi decreti` ha restituito 72 payload lunghi esattamente 1 MiB. Non sono XML
-completi e restano in quarantena. L'eccezione scade il 31 agosto 2026 ed è valida solo se classe,
-collezione, messaggio e conteggio corrispondono esattamente: 72 nel corpus completo e 11 nel
-campione smoke dei primi 1.000 XML.
+La collezione `Regi decreti` restituisce alcuni payload vigenti troncati esattamente a 1 MiB.
+La pipeline li recupera dall'esportazione Akoma Ntoso del singolo atto sul sito ufficiale,
+usando la data dello snapshot, e li accetta solo dopo la normale validazione. Un fallback assente
+o non valido resta fail-closed; non sono più necessarie eccezioni numeriche.
 
 ## Collisioni dei codici redazionali
 

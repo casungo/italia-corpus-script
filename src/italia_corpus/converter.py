@@ -19,6 +19,7 @@ from .akn import (
 _ILLEGAL_XML10 = re.compile(rb"[\x00-\x08\x0B\x0C\x0E-\x1F]")
 _FORMAT_RANK = {"V": 0, "M": 1, "O": 2}
 _UPSTREAM_TRUNCATION_SIZE = 1024 * 1024
+UPSTREAM_TRUNCATION_ERROR = "source payload is exactly 1 MiB and appears truncated"
 
 
 @dataclass(frozen=True)
@@ -119,9 +120,7 @@ def discover_candidate(
                 decoded = base64.b64decode(content, validate=True)
             except (ValueError, binascii.Error) as exc:
                 if len(raw) == _UPSTREAM_TRUNCATION_SIZE:
-                    raise ValueError(
-                        "source payload is exactly 1 MiB and appears truncated"
-                    ) from exc
+                    raise ValueError(UPSTREAM_TRUNCATION_ERROR) from exc
                 raise ValueError("payload is not XML") from exc
             prefix = decoded.lstrip().lower()
             if prefix.startswith((b"<html", b"<!doctype html")):
@@ -139,9 +138,7 @@ def discover_candidate(
                 xml_root = parse_akn_xml(content)
             except ET.ParseError as exc:
                 if len(raw) == _UPSTREAM_TRUNCATION_SIZE:
-                    raise ValueError(
-                        "source payload is exactly 1 MiB and appears truncated"
-                    ) from exc
+                    raise ValueError(UPSTREAM_TRUNCATION_ERROR) from exc
                 raise
         if xml_root.tag != f"{{{AKN_NS}}}akomaNtoso":
             raise ValueError("XML root is not Akoma Ntoso")

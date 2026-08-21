@@ -124,6 +124,23 @@ def test_safe_extract_rejects_zip_slip_and_symlink(tmp_path: Path) -> None:
     assert not (tmp_path.parent / "escape").exists()
 
 
+def test_safe_extract_rejects_existing_destination_symlink(tmp_path: Path) -> None:
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    try:
+        (destination / "nested").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("nested/probe.xml", "bad")
+    with zipfile.ZipFile(stream) as archive, pytest.raises(QualityGateError):
+        safe_extract_zip(archive, destination)
+    assert not (outside / "probe.xml").exists()
+
+
 def test_one_xml_can_be_discovered_directly_from_zip_bytes() -> None:
     report = ConversionReport()
     candidate = discover_candidate(
@@ -132,6 +149,113 @@ def test_one_xml_can_be_discovered_directly_from_zip_bytes() -> None:
     assert candidate is not None
     assert candidate.metadata.codice_redazionale == "042U0262"
     assert report.xml_received == 1
+
+
+def test_truncated_member_is_recovered_from_direct_akn(monkeypatch) -> None:
+    monkeypatch.setattr(
+        pipeline,
+        "_fetch_direct_akn",
+        lambda *args: (FIXTURES / "codice_civile.xml").read_bytes(),
+    )
+
+    recovered = pipeline._recover_truncated_member(
+        object(),
+        "Regi decreti",
+        "REGIO DECRETO_19420316_262/1942-04-04_042U0262_VIGENZA_2026-08-10_V0.xml",
+        "2026-08-10",
+    )
+
+    assert recovered is not None
+    candidate, report = recovered
+    assert candidate.source_format == "V"
+    assert candidate.metadata.codice_redazionale == "042U0262"
+    assert report.errors == []
+
+
+def test_direct_akn_uses_snapshot_identity_and_referer() -> None:
+    detail_url = "https://www.normattiva.it/atto/caricaDettaglioAtto?resolved=1"
+
+    class Response:
+        def __init__(
+            self, url: str, content: bytes, error: Exception | None = None
+        ) -> None:
+            self.url = url
+            self.content = content
+            self.error = error
+
+        def raise_for_status(self) -> None:
+            if self.error:
+                raise self.error
+
+    class Session:
+        def __init__(self, responses: list[Response]) -> None:
+            self.responses = responses
+            self.calls = []
+
+        def get(
+            self, url: str, *, params: dict, headers: dict | None = None, timeout: int
+        ) -> Response:
+            self.calls.append((url, params, headers, timeout))
+            return self.responses.pop(0)
+
+    session = Session([
+        Response(detail_url, b""),
+        Response(pipeline.NORMATTIVA_AKN_URL, b"<akomaNtoso/>"),
+    ])
+    source = "REGIO DECRETO_19420316_262/1942-04-04_042U0262_VIGENZA_2026-08-10_V0.xml"
+
+    assert pipeline._fetch_direct_akn(session, source, "2026-08-10") == b"<akomaNtoso/>"
+    assert session.calls == [
+        (pipeline.NORMATTIVA_DETAIL_URL, {
+            "atto.dataPubblicazioneGazzetta": "1942-04-04",
+            "atto.codiceRedazionale": "042U0262",
+            "atto.articolo.numero": "0",
+            "atto.articolo.sottoArticolo": "1",
+            "atto.articolo.sottoArticolo1": "0",
+        }, None, pipeline.DOWNLOAD_TIMEOUT),
+        (pipeline.NORMATTIVA_AKN_URL, {
+            "dataGU": "19420404",
+            "codiceRedaz": "042U0262",
+            "dataVigenza": "20260810",
+        }, {"Referer": detail_url}, pipeline.DOWNLOAD_TIMEOUT),
+    ]
+
+
+def test_direct_akn_recovery_fails_closed_on_http_error(monkeypatch) -> None:
+    class Response:
+        def __init__(self, url: str, error: Exception | None = None) -> None:
+            self.url = url
+            self.content = b""
+            self.error = error
+
+        def raise_for_status(self) -> None:
+            if self.error:
+                raise self.error
+
+    class Session:
+        def __init__(self) -> None:
+            self.calls = []
+            self.responses = [
+                Response(pipeline.NORMATTIVA_DETAIL_URL),
+                Response(
+                    pipeline.NORMATTIVA_AKN_URL,
+                    pipeline.requests.HTTPError("upstream unavailable"),
+                ),
+            ]
+
+        def get(self, url: str, **kwargs) -> Response:
+            self.calls.append((url, kwargs))
+            return self.responses.pop(0)
+
+    monkeypatch.setattr(pipeline, "DOWNLOAD_MAX_ATTEMPTS", 1)
+    source = "REGIO DECRETO_19420316_262/1942-04-04_042U0262_VIGENZA_2026-08-10_V0.xml"
+
+    session = Session()
+    assert pipeline._recover_truncated_member(session, "Regi decreti", source, "2026-08-10") is None
+    assert [url for url, _ in session.calls] == [
+        pipeline.NORMATTIVA_DETAIL_URL,
+        pipeline.NORMATTIVA_AKN_URL,
+    ]
 
 
 def test_base64_payload_is_decoded_only_when_it_is_valid_akn() -> None:
