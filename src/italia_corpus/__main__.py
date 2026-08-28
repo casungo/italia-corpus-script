@@ -3,7 +3,7 @@ import os
 import sys
 from pathlib import Path
 
-from .config import EXTRACTION_BUFFER_PATH, logger
+from .config import EXTRACTION_BUFFER_PATH, PUBLISH_TARGET, logger
 from .github_client import github_client, verify_github_session
 from .pipeline import extract_and_push
 
@@ -54,7 +54,7 @@ def main() -> None:
 
     logger.info("Root path: %s", root_path)
     gh = None
-    if not args.dry_run:
+    if not args.dry_run and PUBLISH_TARGET == "github":
         gh = github_client()
         verify_github_session(gh)
     output = extract_and_push(

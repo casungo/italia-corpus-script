@@ -11,6 +11,8 @@ deploy-test.sh
 deploy.sh
 dry-runs/
 smoke-runs/
+data/
+github_token
 
 
 # Distribution / packaging

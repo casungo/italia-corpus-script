@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shutil
 import sqlite3
 import sys
 import urllib.request
@@ -133,10 +134,22 @@ def _download(args: argparse.Namespace) -> int:
     args.directory.mkdir(parents=True, exist_ok=True)
     wanted = set(args.assets)
     found = 0
-    for asset in release["assets"]:
-        if asset["name"] in wanted:
-            urllib.request.urlretrieve(asset["browser_download_url"], args.directory / asset["name"])
+    available = {asset["name"]: asset["browser_download_url"] for asset in release["assets"]}
+    for name in wanted:
+        if url := available.get(name):
+            urllib.request.urlretrieve(url, args.directory / name)
             found += 1
+            continue
+        parts = [item for item in sorted(available) if item.startswith(f"{name}.part")]
+        if not parts:
+            continue
+        temporary = args.directory / f"{name}.partial"
+        with temporary.open("wb") as destination:
+            for part in parts:
+                with urllib.request.urlopen(available[part]) as source:
+                    shutil.copyfileobj(source, destination)
+        temporary.replace(args.directory / name)
+        found += 1
     return 0 if found == len(wanted) else 1
 
 

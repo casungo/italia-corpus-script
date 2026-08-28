@@ -1,0 +1,13 @@
+services:
+  italia-corpus:
+    build: .
+    restart: unless-stopped
+    env_file: ${ITALIA_CORPUS_ENV_FILE:-.env}
+    volumes:
+      - ${ITALIA_CORPUS_DATA_DIR:-./data}:/data
+    secrets:
+      - github_token
+
+secrets:
+  github_token:
+    file: ${GITHUB_TOKEN_SECRET_FILE:-./github_token}

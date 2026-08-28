@@ -20,13 +20,23 @@ def redact(text: str) -> str:
     return text.replace(token, "***") if token else text
 
 
-def git(args: list[str], cwd: str, check: bool = True, github_auth: bool = False) -> subprocess.CompletedProcess:
+def git(
+    args: list[str], cwd: str, check: bool = True, github_auth: bool = False,
+    auth_token: str = "", auth_username: str = "x-access-token",
+) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     if github_auth and (token := primary_token()):
         credential = base64.b64encode(f"x-access-token:{token}".encode()).decode()
         env.update({
             "GIT_CONFIG_COUNT": "1",
             "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
+            "GIT_CONFIG_VALUE_0": f"Authorization: Basic {credential}",
+        })
+    elif auth_token:
+        credential = base64.b64encode(f"{auth_username}:{auth_token}".encode()).decode()
+        env.update({
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "http.extraheader",
             "GIT_CONFIG_VALUE_0": f"Authorization: Basic {credential}",
         })
     logger.debug("git %s (cwd=%s)", redact(" ".join(args)), cwd)
@@ -74,8 +84,14 @@ def stage_snapshot(snapshot: Path, clone_dir: Path, collection_dirs: list[str]) 
     return tag, previous_sha
 
 
-def push_snapshot(clone_dir: Path, branch: str, tag: str) -> None:
-    git(["push", "--atomic", "origin", f"HEAD:{branch}", tag], str(clone_dir), github_auth=True)
+def push_snapshot(
+    clone_dir: Path, branch: str, tag: str, *, github_auth: bool = True,
+    auth_token: str = "", auth_username: str = "x-access-token",
+) -> None:
+    git(
+        ["push", "--atomic", "origin", f"HEAD:{branch}", tag], str(clone_dir),
+        github_auth=github_auth, auth_token=auth_token, auth_username=auth_username,
+    )
 
 
 def rollback_snapshot(clone_dir: Path, branch: str, tag: str, previous_sha: str) -> None:

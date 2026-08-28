@@ -21,6 +21,7 @@ from italia_corpus.converter import (
 )
 from italia_corpus.cli import main as cli_main
 from italia_corpus import __main__ as pipeline_cli
+from italia_corpus import git_ops
 from italia_corpus import pipeline
 from italia_corpus.snapshot import (
     QualityGateError, SCHEMA_VERSION, build_legacy_archive, build_sqlite, safe_extract_zip,
@@ -525,6 +526,57 @@ def test_download_reuses_only_a_valid_zip_cache(tmp_path: Path, monkeypatch, cap
     assert destination.read_bytes() == cache.read_bytes()
     assert "format=V cache_hit=false" in caplog.text
     assert "format=V cache_hit=true" in caplog.text
+
+
+def test_discovery_cache_restores_candidates_without_reopening_the_zip(tmp_path: Path) -> None:
+    report = ConversionReport()
+    candidate = discover_candidate(
+        "Codici", "V", "cached.xml", (FIXTURES / "codice_civile.xml").read_bytes(), report
+    )
+    assert candidate is not None
+    cache = pipeline._discovery_cache_path(tmp_path, {
+        "nomeCollezione": "Codici", "formatoCollezione": "V", "dataCreazione": "2026-08-28",
+    })
+    pipeline._cache_discovery(cache, [candidate], report)
+
+    restored = pipeline._restore_discovery(cache)
+
+    assert restored is not None
+    candidates, restored_report = restored
+    assert candidates == [candidate]
+    assert restored_report.xml_received == 1
+    assert restored_report.collections == {"Codici": {"xml_received": 1}}
+
+
+def test_release_assets_split_at_github_limit(tmp_path: Path, monkeypatch) -> None:
+    artifact = tmp_path / "corpus.sqlite"
+    artifact.write_bytes(b"0123456789")
+    sums = tmp_path / "SHA256SUMS"
+    sums.write_text(f"{hashlib.sha256(artifact.read_bytes()).hexdigest()}  corpus.sqlite\n")
+    monkeypatch.setattr(pipeline, "MAX_RELEASE_ASSET_BYTES", 4)
+
+    assets = pipeline._release_assets([artifact, sums])
+
+    assert [path.name for path in assets] == [
+        "corpus.sqlite.part001", "corpus.sqlite.part002", "corpus.sqlite.part003", "SHA256SUMS",
+    ]
+    assert b"".join(path.read_bytes() for path in assets[:-1]) == b"0123456789"
+    assert not artifact.exists()
+
+
+def test_git_accepts_a_generic_http_token(tmp_path: Path, monkeypatch) -> None:
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured.update(kwargs["env"])
+        return subprocess.CompletedProcess(args[0], 0, "", "")
+
+    monkeypatch.setattr(git_ops.subprocess, "run", fake_run)
+
+    git_ops.git(["status"], str(tmp_path), auth_token="secret", auth_username="oauth2")
+
+    assert captured["GIT_CONFIG_KEY_0"] == "http.extraheader"
+    assert captured["GIT_CONFIG_VALUE_0"].endswith("b2F1dGgyOnNlY3JldA==")
 
 
 def test_download_resumes_a_partial_response(tmp_path: Path, monkeypatch) -> None:

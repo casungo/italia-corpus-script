@@ -53,7 +53,55 @@ espone gli intervalli interrogabili nella tabella `articles`.
 
 Le release sono immutabili e denominate `snapshot-YYYY-MM-DD`.
 
-## Installazione e pipeline
+## Container persistente
+
+Il container sostituisce il runner GitHub per le esecuzioni complete. Tiene ZIP verificati e
+download `.partial` in un volume, perciò un reset di Normattiva riparte dal byte già ricevuto.
+Non espone porte HTTP e non contiene token nell'immagine.
+
+```bash
+cp .env.example .env
+printf '%s' 'github_pat_...' > github_token
+docker compose up -d --build
+docker compose logs -f
+```
+
+Per pubblicare nel tuo corpus, lascia nell'`.env`:
+
+```dotenv
+GITHUB_USERNAME=your-github-username
+GITHUB_TARGET_REPO=italia-corpus
+ITALIA_CORPUS_DATA_DIR=/mnt/storage/DATA/italia-corpus-runner
+RUN_INTERVAL_SECONDS=2592000
+RETRY_DELAY_SECONDS=3600
+```
+
+Il token sta nel file `github_token`, montato come Docker secret. Deve poter scrivere nel repository
+target. `RUN_INTERVAL_SECONDS=0` esegue una volta e termina. Il container riprova gli errori dopo
+`RETRY_DELAY_SECONDS`, conservando la cache nel volume. Per una prova manuale:
+
+```bash
+docker compose run --rm italia-corpus --once
+```
+
+### Destinazioni di pubblicazione
+
+`PUBLISH_TARGET=github` crea o aggiorna una repository GitHub, pubblica release e carica gli
+artifact. `PUBLISH_TARGET=git` supporta GitLab, Codeberg, Gitea e qualsiasi server Git:
+
+```dotenv
+PUBLISH_TARGET=git
+GIT_TARGET_URL=https://git.example.com/owner/italia-corpus.git
+GIT_TARGET_BRANCH=main
+GIT_TARGET_USERNAME=x-access-token
+PUBLISH_TOKEN_FILE=/run/secrets/github_token
+```
+
+Con il target Git generico, il container fa clone, commit e tag atomico. Non crea repository,
+release o asset perché quelle API non sono standard tra i provider. Per SSH, ometti il token e usa
+un URL `ssh://` con le credenziali Git disponibili nel container.
+
+## Installazione locale e pipeline
 
 Richiede Python 3.13 e Git.
 
@@ -66,7 +114,7 @@ italia-corpus-pipeline --dry-run --smoke-test /percorso/con-spazio-sufficiente
 italia-corpus-pipeline --dry-run --download-cache /percorso/cache /percorso/con-spazio-sufficiente
 ```
 
-Variabili obbligatorie: `GITHUB_USERNAME`, `GITHUB_TARGET_REPO` e un token tra `GITHUB_TOKEN_1` … `GITHUB_TOKEN_20` o `GITHUB_TOKEN`. Il token viene passato a Git tramite configurazione di processo e non viene inserito nel clone URL.
+Variabili obbligatorie: `GITHUB_USERNAME`, `GITHUB_TARGET_REPO` e un token tra `GITHUB_TOKEN_1` … `GITHUB_TOKEN_20` o `GITHUB_TOKEN`. `GITHUB_TARGET_REPO` accetta sia `italia-corpus` sia `owner/italia-corpus`; se deve creare la repository, la crea pubblica. Il token viene passato a Git tramite configurazione di processo e non viene inserito nel clone URL.
 
 Con `--dry-run` la pipeline non inizializza GitHub e non crea commit, tag o release. Snapshot e artifact restano nella directory `italia-corpus-dry-run-*` stampata a fine esecuzione; `--baseline` abilita i controlli di regressione contro un manifest precedente.
 
@@ -76,10 +124,9 @@ Gli ZIP validi vengono conservati per nome, formato e `dataCreazione` upstream. 
 un checksum SHA-256 ed è registrato in `inventory.json`; prima del riuso vengono verificati
 checksum, inventario e CRC di tutti i membri. Un retry dello stesso snapshot riusa quindi solo
 pacchetti integri della medesima edizione; `--download-cache` permette di collocare esplicitamente
-questa cache fuori dalla directory di lavoro. Il workflow `Corpus snapshots` conserva la cache
-anche dopo un tentativo fallito; un dispatch manuale con `publish` disattivato esegue una full
-dry-run, mentre il flag attivo pubblica solo dopo tutti i quality gate. I log riportano avanzamento
-per collezione, formato effettivo, cache hit/miss, XML letti e tempi.
+questa cache fuori dalla directory di lavoro. Il container conserva la cache anche dopo un
+tentativo fallito e ripete il full run in autonomia. I log riportano avanzamento per collezione,
+formato effettivo, cache hit/miss, XML letti e tempi.
 
 ## CLI per gli utenti
 
@@ -101,4 +148,4 @@ python -m ruff check .
 python -m mypy
 ```
 
-La CI esegue parser, golden multi-collezione, sicurezza ZIP, riproducibilità, manifest, SQLite e controlli statici su Linux e Windows, oltre ad audit delle dipendenze e secret scanning. Il workflow snapshot esegue uno smoke globale giornaliero e una pubblicazione completa mensile; il rollout v4 e la transizione dal layout legacy sono descritti in `docs/rollout.md`.
+La CI esegue parser, golden multi-collezione, sicurezza ZIP, riproducibilità, manifest, SQLite e controlli statici su Linux e Windows, oltre ad audit delle dipendenze e secret scanning. Le pubblicazioni complete sono affidate al container persistente; il rollout v4 e la transizione dal layout legacy sono descritti in `docs/rollout.md`.

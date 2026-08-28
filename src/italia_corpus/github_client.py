@@ -7,7 +7,7 @@ from github.AuthenticatedUser import AuthenticatedUser
 from github.Repository import Repository
 from urllib3.util import Retry
 
-from .config import GITHUB_USERNAME, logger
+from .config import GITHUB_USERNAME, logger, target_repo_full_name
 
 
 def primary_token() -> str:
@@ -89,8 +89,8 @@ def verify_github_session(gh: Github) -> None:
 
 
 def get_or_create_repo(gh: Github, repo_name: str) -> Repository:
-    """Return the repo if it exists, otherwise create it (private, auto-init)."""
-    full_name = f"{GITHUB_USERNAME}/{repo_name}"
+    """Return the repo if it exists, otherwise create it public and auto-initialized."""
+    full_name = target_repo_full_name(repo_name)
     try:
         repo = gh.get_repo(full_name)
         logger.info("Using existing repo %s", full_name)
@@ -115,10 +115,10 @@ def get_or_create_repo(gh: Github, repo_name: str) -> Repository:
     logger.info("Creating repo %s", full_name)
     user = cast(AuthenticatedUser, gh.get_user())
     repo = user.create_repo(
-        name=repo_name,
-        private=True,
+        name=full_name.rsplit("/", 1)[-1],
+        private=False,
         auto_init=True,
-        description=f"Normattiva Open Data – {repo_name}",
+        description=f"Normattiva Open Data – {full_name}",
     )
     logger.info("Created repo %s (default branch: %s)", full_name, repo.default_branch)
     return repo
