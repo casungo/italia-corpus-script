@@ -244,6 +244,21 @@ def _discovery_cache_path(cache_root: Path, collection: dict) -> Path:
     )
 
 
+def upstream_collections_are_cached(cache_root: Path) -> bool:
+    """Return false when upstream metadata needs a full, validated snapshot."""
+    collections = merge_collections_by_name(fetch_predefined_collections())
+    missing = [
+        collection_download_params(collection)["nome"]
+        for collection in collections
+        if not _discovery_cache_path(cache_root, collection).is_file()
+    ]
+    if missing:
+        logger.info("Upstream check requires a full snapshot: %s", ", ".join(missing))
+        return False
+    logger.info("Upstream check: %d collections unchanged", len(collections))
+    return True
+
+
 def _cache_discovery(path: Path, candidates: list[Candidate], report: ConversionReport) -> None:
     payload = {
         "version": DISCOVERY_CACHE_VERSION,

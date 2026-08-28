@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .config import EXTRACTION_BUFFER_PATH, PUBLISH_TARGET, logger
 from .github_client import github_client, verify_github_session
-from .pipeline import extract_and_push
+from .pipeline import extract_and_push, upstream_collections_are_cached
 
 
 def main() -> None:
@@ -36,6 +36,11 @@ def main() -> None:
         help="Cache persistente degli ZIP, separata per collezione, formato e data upstream.",
     )
     parser.add_argument(
+        "--check-upstream",
+        action="store_true",
+        help="Controlla le edizioni Normattiva senza scaricare o pubblicare.",
+    )
+    parser.add_argument(
         "root_path",
         nargs="?",
         default=os.getenv("ROOT_PATH"),
@@ -46,11 +51,16 @@ def main() -> None:
         parser.error("--smoke-test richiede --dry-run")
     if args.smoke_test and args.baseline:
         parser.error("--smoke-test non può usare --baseline")
+    if args.check_upstream and (args.dry_run or args.smoke_test or args.baseline):
+        parser.error("--check-upstream non usa --dry-run, --smoke-test o --baseline")
     root_path = (args.root_path or "").strip()
     if not root_path:
         root_path = (EXTRACTION_BUFFER_PATH or "").strip()
     if not root_path:
         parser.error("Specifica root_path o imposta ROOT_PATH / EXTRACTION_BUFFER_PATH.")
+    if args.check_upstream:
+        cache_root = args.download_cache or Path(root_path) / "download-cache"
+        raise SystemExit(0 if upstream_collections_are_cached(cache_root) else 1)
 
     logger.info("Root path: %s", root_path)
     gh = None

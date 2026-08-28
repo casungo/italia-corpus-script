@@ -5,9 +5,9 @@ usage() {
     cat <<'EOF'
 Usage: docker run IMAGE [--once]
 
-With no argument the container runs a full snapshot immediately, then repeats
-after RUN_INTERVAL_SECONDS. Set RUN_INTERVAL_SECONDS=0 or pass --once to run
-one snapshot and exit.
+With no argument the container checks Normattiva every CHECK_INTERVAL_SECONDS,
+runs a full snapshot when an edition changes, and forces one every
+FULL_RUN_INTERVAL_SECONDS. Pass --once to run one snapshot and exit.
 EOF
 }
 
@@ -43,11 +43,13 @@ esac
 
 ROOT_PATH=${ROOT_PATH:-/data/work}
 DOWNLOAD_CACHE_PATH=${DOWNLOAD_CACHE_PATH:-/data/download-cache}
-RUN_INTERVAL_SECONDS=${RUN_INTERVAL_SECONDS:-0}
+CHECK_INTERVAL_SECONDS=${CHECK_INTERVAL_SECONDS:-86400}
+FULL_RUN_INTERVAL_SECONDS=${FULL_RUN_INTERVAL_SECONDS:-${RUN_INTERVAL_SECONDS:-2592000}}
 RETRY_DELAY_SECONDS=${RETRY_DELAY_SECONDS:-3600}
+LAST_FULL_RUN_FILE=${LAST_FULL_RUN_FILE:-/data/last-full-run}
 
-case "$RUN_INTERVAL_SECONDS:$RETRY_DELAY_SECONDS" in
-    *[!0-9:]* | :* | *:) echo "Run intervals must be whole seconds" >&2; exit 2 ;;
+case "$CHECK_INTERVAL_SECONDS:$FULL_RUN_INTERVAL_SECONDS:$RETRY_DELAY_SECONDS" in
+    *[!0-9:]* | :* | *: | *::* ) echo "Run intervals must be whole seconds" >&2; exit 2 ;;
 esac
 
 mkdir -p "$ROOT_PATH" "$DOWNLOAD_CACHE_PATH"
@@ -58,8 +60,16 @@ run_snapshot() {
         "$ROOT_PATH"
 }
 
+run_full_snapshot() {
+    if run_snapshot; then
+        date +%s > "$LAST_FULL_RUN_FILE"
+        return 0
+    fi
+    return 1
+}
+
 if [ "${1:-}" = "--once" ]; then
-    run_snapshot
+    run_full_snapshot
     exit 0
 fi
 
@@ -68,10 +78,14 @@ if [ "$#" -gt 0 ]; then
 fi
 
 while :; do
-    if run_snapshot; then
-        [ "$RUN_INTERVAL_SECONDS" -gt 0 ] || exit 0
-        sleep "$RUN_INTERVAL_SECONDS"
-    else
+    now=$(date +%s)
+    last=0
+    [ -f "$LAST_FULL_RUN_FILE" ] && last=$(cat "$LAST_FULL_RUN_FILE")
+    if [ "$last" -gt 0 ] && [ $((now - last)) -lt "$FULL_RUN_INTERVAL_SECONDS" ] \
+        && python -m italia_corpus --check-upstream --download-cache "$DOWNLOAD_CACHE_PATH" "$ROOT_PATH"
+    then
+        sleep "$CHECK_INTERVAL_SECONDS"
+    elif ! run_full_snapshot; then
         echo "Snapshot failed; retrying in ${RETRY_DELAY_SECONDS}s with the persisted cache." >&2
         sleep "$RETRY_DELAY_SECONDS"
     fi

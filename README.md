@@ -72,13 +72,15 @@ Per pubblicare nel tuo corpus, lascia nell'`.env`:
 GITHUB_USERNAME=your-github-username
 GITHUB_TARGET_REPO=italia-corpus
 ITALIA_CORPUS_DATA_DIR=/mnt/storage/DATA/italia-corpus-runner
-RUN_INTERVAL_SECONDS=2592000
+CHECK_INTERVAL_SECONDS=86400
+FULL_RUN_INTERVAL_SECONDS=2592000
 RETRY_DELAY_SECONDS=3600
 ```
 
 Il token sta nel file `github_token`, montato come Docker secret. Deve poter scrivere nel repository
-target. `RUN_INTERVAL_SECONDS=0` esegue una volta e termina. Il container riprova gli errori dopo
-`RETRY_DELAY_SECONDS`, conservando la cache nel volume. Per una prova manuale:
+target. Il container controlla le edizioni Normattiva ogni giorno e fa il run completo solo quando
+trova una variazione; `FULL_RUN_INTERVAL_SECONDS` forza comunque un controllo completo mensile.
+Il container riprova gli errori dopo `RETRY_DELAY_SECONDS`, conservando la cache nel volume. Per una prova manuale:
 
 ```bash
 docker compose run --rm italia-corpus --once

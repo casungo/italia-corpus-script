@@ -548,6 +548,22 @@ def test_discovery_cache_restores_candidates_without_reopening_the_zip(tmp_path:
     assert restored_report.collections == {"Codici": {"xml_received": 1}}
 
 
+def test_upstream_check_requires_a_checkpoint_for_each_current_collection(
+    tmp_path: Path, monkeypatch
+) -> None:
+    collection = {
+        "nomeCollezione": "Codici", "formatoCollezione": "V", "dataCreazione": "2026-08-28",
+    }
+    monkeypatch.setattr(pipeline, "fetch_predefined_collections", lambda: [collection])
+
+    assert not pipeline.upstream_collections_are_cached(tmp_path)
+    checkpoint = pipeline._discovery_cache_path(tmp_path, collection)
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.touch()
+
+    assert pipeline.upstream_collections_are_cached(tmp_path)
+
+
 def test_release_assets_split_at_github_limit(tmp_path: Path, monkeypatch) -> None:
     artifact = tmp_path / "corpus.sqlite"
     artifact.write_bytes(b"0123456789")
