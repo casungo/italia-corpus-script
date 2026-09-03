@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "italia-corpus"
-version = "2.0.0"
+version = "2.0.1"
 description = "Verified Italian legislation snapshots from Normattiva"
 requires-python = ">=3.13"
 dependencies = [
@@ -14,7 +14,7 @@ dependencies = [
   "urllib3==2.7.0",
   "zstandard==0.23.0",
   "pyarrow==23.0.1",
-  "pypdf==6.15.0",
+  "pypdf==6.16.1",
 ]
 
 [project.scripts]

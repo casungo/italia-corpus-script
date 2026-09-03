@@ -56,7 +56,8 @@ Le release sono immutabili e denominate `snapshot-YYYY-MM-DD`.
 ## Container persistente
 
 Il container sostituisce il runner GitHub per le esecuzioni complete. Tiene ZIP verificati e
-download `.partial` in un volume, perciò un reset di Normattiva riparte dal byte già ricevuto.
+download `.partial` in un volume durante i retry; dopo uno snapshot riuscito elimina le edizioni
+superate e conserva solo i dati della versione corrente.
 Non espone porte HTTP e non contiene token nell'immagine.
 
 ```bash

@@ -116,6 +116,37 @@ def _cache_zip(cache: Path, source: Path, params: dict, digest: str, members: in
     _write_cache_inventory(cache.parent, inventory)
 
 
+def _archive_cache_name(collection: dict, params: dict) -> str:
+    return "-".join((
+        safe_repo_name(params["nome"]), params["formatoRichiesta"],
+        str(collection.get("dataCreazione") or "unknown"),
+    )) + ".zip"
+
+
+def _prune_download_cache(
+    cache_root: Path, archive_names: set[str], discovery_names: set[str]
+) -> None:
+    """Keep only inputs used by a successful snapshot."""
+    inventory = _load_cache_inventory(cache_root)
+    removed = 0
+    for archive in cache_root.glob("*.zip"):
+        if archive.name not in archive_names:
+            archive.unlink()
+            archive.with_suffix(archive.suffix + ".sha256").unlink(missing_ok=True)
+            inventory["archives"].pop(archive.name, None)
+            removed += 1
+    for partial in cache_root.glob("*.zip.partial*"):
+        partial.unlink()
+    discovery_root = cache_root / "discovery"
+    for discovery in discovery_root.glob(f"*-v{DISCOVERY_CACHE_VERSION}.json.gz"):
+        if discovery.name not in discovery_names:
+            discovery.unlink()
+            removed += 1
+    _write_cache_inventory(cache_root, inventory)
+    if removed:
+        logger.info("Pruned %s stale download-cache entries", removed)
+
+
 def _restore_cached_zip(cache: Path, destination: Path) -> bool:
     if not cache.is_file():
         return False
@@ -347,10 +378,7 @@ def _download_collection(collection: dict, destination: Path, cache_root: Path) 
     ]
     for source_format in formats:
         attempt = params | {"formatoRichiesta": source_format}
-        cache_name = "-".join((
-            safe_repo_name(attempt["nome"]), source_format,
-            str(collection.get("dataCreazione") or "unknown"),
-        )) + ".zip"
+        cache_name = _archive_cache_name(collection, attempt)
         try:
             cache_hit = _download(attempt, destination, cache_root / cache_name)
             if source_format != preferred:
@@ -507,6 +535,7 @@ def extract_and_push(
     )
     with workspace as temporary:
         root = Path(temporary)
+        active_archives: set[str] = set()
         clone = root / "repo"
         if not dry_run:
             git(
@@ -576,6 +605,7 @@ def extract_and_push(
             if download is None:
                 continue
             params, cache_hit = download
+            active_archives.add(_archive_cache_name(collection, params))
             collections_downloaded += 1
             pending_truncations: list[tuple[ZipInfo, ConversionReport]] = []
 
@@ -755,5 +785,10 @@ def extract_and_push(
                     clone, branch, tag, github_auth=False, auth_token=GIT_TARGET_TOKEN,
                     auth_username=GIT_TARGET_USERNAME,
                 )
+        _prune_download_cache(
+            cache_root,
+            active_archives,
+            {_discovery_cache_path(cache_root, collection).name for collection in collections},
+        )
         logger.info("Published %s acts from %s XML files", report.converted, report.xml_received)
         return root

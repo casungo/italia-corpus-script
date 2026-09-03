@@ -548,6 +548,34 @@ def test_discovery_cache_restores_candidates_without_reopening_the_zip(tmp_path:
     assert restored_report.collections == {"Codici": {"xml_received": 1}}
 
 
+def test_successful_run_prunes_stale_download_cache(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    inventory = {
+        "schema_version": 1,
+        "archives": {"current.zip": {}, "stale.zip": {}},
+    }
+    (cache / "inventory.json").write_text(json.dumps(inventory))
+    for name in ("current.zip", "stale.zip"):
+        (cache / name).write_bytes(b"zip")
+        (cache / f"{name}.sha256").write_text("checksum")
+    (cache / "stale.zip.partial").write_bytes(b"partial")
+    discovery = cache / "discovery"
+    discovery.mkdir()
+    (discovery / "current-v1.json.gz").write_bytes(b"current")
+    (discovery / "stale-v1.json.gz").write_bytes(b"stale")
+
+    pipeline._prune_download_cache(cache, {"current.zip"}, {"current-v1.json.gz"})
+
+    assert (cache / "current.zip").exists()
+    assert not (cache / "stale.zip").exists()
+    assert not (cache / "stale.zip.sha256").exists()
+    assert not (cache / "stale.zip.partial").exists()
+    assert (discovery / "current-v1.json.gz").exists()
+    assert not (discovery / "stale-v1.json.gz").exists()
+    assert json.loads((cache / "inventory.json").read_text())["archives"] == {"current.zip": {}}
+
+
 def test_upstream_check_requires_a_checkpoint_for_each_current_collection(
     tmp_path: Path, monkeypatch
 ) -> None:

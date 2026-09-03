@@ -4,4 +4,4 @@ PyGithub==2.9.1
 urllib3==2.7.0
 zstandard==0.23.0
 pyarrow==23.0.1
-pypdf==6.15.0
+pypdf==6.16.1
