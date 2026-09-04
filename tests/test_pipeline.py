@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import hashlib
 import io
 import json
@@ -171,6 +172,31 @@ def test_truncated_member_is_recovered_from_direct_akn(monkeypatch) -> None:
     assert candidate.source_format == "V"
     assert candidate.metadata.codice_redazionale == "042U0262"
     assert report.errors == []
+
+
+def test_direct_akn_recovery_persists_its_xml_source(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        pipeline,
+        "_fetch_direct_akn",
+        lambda *args: (FIXTURES / "codice_civile.xml").read_bytes(),
+    )
+
+    recovery_cache = tmp_path / "recovery.xml"
+    recovered = pipeline._recover_truncated_member(
+        object(),
+        "Regi decreti",
+        "REGIO DECRETO_19420316_262/1942-04-04_042U0262_VIGENZA_2026-08-10_V0.xml",
+        "2026-08-10",
+        recovery_cache,
+    )
+
+    assert recovered is not None
+    candidate, _ = recovered
+    assert candidate.content is None
+    assert candidate.xml_path == recovery_cache
+    assert recovery_cache.read_text(encoding="utf-8") == (FIXTURES / "codice_civile.xml").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_direct_akn_uses_snapshot_identity_and_referer() -> None:
@@ -528,12 +554,18 @@ def test_download_reuses_only_a_valid_zip_cache(tmp_path: Path, monkeypatch, cap
     assert "format=V cache_hit=true" in caplog.text
 
 
-def test_discovery_cache_restores_candidates_without_reopening_the_zip(tmp_path: Path) -> None:
+def test_discovery_cache_stores_references_without_xml_bodies(tmp_path: Path) -> None:
     report = ConversionReport()
     candidate = discover_candidate(
         "Codici", "V", "cached.xml", (FIXTURES / "codice_civile.xml").read_bytes(), report
     )
     assert candidate is not None
+    candidate = replace(
+        candidate,
+        content=None,
+        archive_name="codici-V-2026-08-28.zip",
+        member_name="cached.xml",
+    )
     cache = pipeline._discovery_cache_path(tmp_path, {
         "nomeCollezione": "Codici", "formatoCollezione": "V", "dataCreazione": "2026-08-28",
     })
@@ -546,6 +578,98 @@ def test_discovery_cache_restores_candidates_without_reopening_the_zip(tmp_path:
     assert candidates == [candidate]
     assert restored_report.xml_received == 1
     assert restored_report.collections == {"Codici": {"xml_received": 1}}
+    with gzip.open(cache, "rt", encoding="utf-8") as stream:
+        assert (FIXTURES / "codice_civile.xml").read_text(encoding="utf-8") not in stream.read()
+
+
+def test_renderer_reads_a_candidate_from_its_cached_zip(tmp_path: Path) -> None:
+    report = ConversionReport()
+    candidate = discover_candidate(
+        "Codici", "V", "cached.xml", (FIXTURES / "codice_civile.xml").read_bytes(), report
+    )
+    assert candidate is not None
+    archive_name = "codici-V-2026-08-28.zip"
+    candidate = replace(
+        candidate, content=None, archive_name=archive_name, member_name="cached.xml"
+    )
+    with zipfile.ZipFile(tmp_path / archive_name, "w") as archive:
+        archive.writestr("cached.xml", (FIXTURES / "codice_civile.xml").read_bytes())
+
+    render_candidates([candidate], tmp_path / "snapshot", report, tmp_path)
+
+    assert (tmp_path / "snapshot" / candidate.repo_path).is_file()
+    assert report.errors == []
+
+
+def test_discovery_cache_hit_restores_missing_zip_without_rediscovery(
+    tmp_path: Path, monkeypatch
+) -> None:
+    collection = {
+        "nomeCollezione": "Codici", "formatoCollezione": "V", "dataCreazione": "2026-08-28",
+    }
+    report = ConversionReport()
+    candidate = discover_candidate(
+        "Codici", "V", "cached.xml", (FIXTURES / "codice_civile.xml").read_bytes(), report
+    )
+    assert candidate is not None
+    candidate = replace(
+        candidate,
+        content=None,
+        archive_name="codici-V-2026-08-28.zip",
+        member_name="cached.xml",
+    )
+    discovery_cache = pipeline._discovery_cache_path(tmp_path, collection)
+    pipeline._cache_discovery(discovery_cache, [candidate], report)
+    restored = pipeline._restore_discovery(discovery_cache)
+    assert restored is not None
+    candidates, _ = restored
+    downloads = []
+
+    def download(params, destination, cache):
+        downloads.append((params, cache))
+        with zipfile.ZipFile(destination, "w") as archive:
+            archive.writestr("cached.xml", (FIXTURES / "codice_civile.xml").read_bytes())
+        return False
+
+    monkeypatch.setattr(pipeline, "_download", download)
+
+    assert pipeline._restore_discovery_sources(collection, candidates, tmp_path / "run.zip", tmp_path) == {
+        "codici-V-2026-08-28.zip"
+    }
+    assert downloads == [(
+        {"nome": "Codici", "formato": "AKN", "formatoRichiesta": "V"},
+        tmp_path / "codici-V-2026-08-28.zip",
+    )]
+
+
+def test_discovery_cache_with_missing_zip_member_requires_fresh_discovery(
+    tmp_path: Path, monkeypatch
+) -> None:
+    collection = {
+        "nomeCollezione": "Codici", "formatoCollezione": "V", "dataCreazione": "2026-08-28",
+    }
+    report = ConversionReport()
+    candidate = discover_candidate(
+        "Codici", "V", "cached.xml", (FIXTURES / "codice_civile.xml").read_bytes(), report
+    )
+    assert candidate is not None
+    candidate = replace(
+        candidate,
+        content=None,
+        archive_name="codici-V-2026-08-28.zip",
+        member_name="missing.xml",
+    )
+
+    def download(params, destination, cache):
+        with zipfile.ZipFile(destination, "w") as archive:
+            archive.writestr("cached.xml", (FIXTURES / "codice_civile.xml").read_bytes())
+        return False
+
+    monkeypatch.setattr(pipeline, "_download", download)
+
+    assert pipeline._restore_discovery_sources(
+        collection, [candidate], tmp_path / "run.zip", tmp_path
+    ) is None
 
 
 def test_successful_run_prunes_stale_download_cache(tmp_path: Path) -> None:
@@ -562,17 +686,17 @@ def test_successful_run_prunes_stale_download_cache(tmp_path: Path) -> None:
     (cache / "stale.zip.partial").write_bytes(b"partial")
     discovery = cache / "discovery"
     discovery.mkdir()
-    (discovery / "current-v1.json.gz").write_bytes(b"current")
-    (discovery / "stale-v1.json.gz").write_bytes(b"stale")
+    (discovery / "current-v2.json.gz").write_bytes(b"current")
+    (discovery / "stale-v2.json.gz").write_bytes(b"stale")
 
-    pipeline._prune_download_cache(cache, {"current.zip"}, {"current-v1.json.gz"})
+    pipeline._prune_download_cache(cache, {"current.zip"}, {"current-v2.json.gz"})
 
     assert (cache / "current.zip").exists()
     assert not (cache / "stale.zip").exists()
     assert not (cache / "stale.zip.sha256").exists()
     assert not (cache / "stale.zip.partial").exists()
-    assert (discovery / "current-v1.json.gz").exists()
-    assert not (discovery / "stale-v1.json.gz").exists()
+    assert (discovery / "current-v2.json.gz").exists()
+    assert not (discovery / "stale-v2.json.gz").exists()
     assert json.loads((cache / "inventory.json").read_text())["archives"] == {"current.zip": {}}
 
 

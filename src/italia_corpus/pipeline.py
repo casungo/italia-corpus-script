@@ -12,6 +12,7 @@ import tempfile
 import time
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import nullcontext
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from zipfile import BadZipFile, ZipFile, ZipInfo
 
@@ -51,7 +52,7 @@ NORMATTIVA_AKN_URL = "https://www.normattiva.it/do/atto/caricaAKN"
 _MEMBER_ID = re.compile(r"^(\d{4}-\d{2}-\d{2})_([0-9A-Z]+)_")
 SMOKE_XML_PER_COLLECTION = 1_000
 CACHE_INVENTORY = "inventory.json"
-DISCOVERY_CACHE_VERSION = 1
+DISCOVERY_CACHE_VERSION = 2
 MAX_RELEASE_ASSET_BYTES = 2 * 1024 * 1024 * 1024 - 1
 DISCOVERY_WORKERS = min(8, max(1, (os.cpu_count() or 1) * 2))
 _DISCOVERY_ARCHIVE: ZipFile | None = None
@@ -297,10 +298,12 @@ def _cache_discovery(path: Path, candidates: list[Candidate], report: Conversion
             "collection": candidate.collection,
             "source_format": candidate.source_format,
             "metadata": vars(candidate.metadata),
-            "content": candidate.content,
             "source_articles": candidate.source_articles,
             "source": candidate.source,
             "path_suffix": candidate.path_suffix,
+            "xml_path": candidate.xml_path.as_posix(),
+            "archive_name": candidate.archive_name,
+            "member_name": candidate.member_name,
         } for candidate in candidates],
         "report": report.to_dict(),
     }
@@ -328,15 +331,46 @@ def _restore_discovery(path: Path) -> tuple[list[Candidate], ConversionReport] |
             collections=report_data["collections"],
         )
         candidates = [Candidate(
-            Path(item["source"]), item["collection"], item["source_format"],
-            AknFrontmatter(**item["metadata"]), item["content"], int(item["source_articles"]),
-            item["source"], item.get("path_suffix", ""),
+            Path(item["xml_path"]), item["collection"], item["source_format"],
+            AknFrontmatter(**item["metadata"]), None, int(item["source_articles"]),
+            item["source"], item.get("path_suffix", ""), item.get("archive_name"),
+            item.get("member_name"),
         ) for item in payload["candidates"]]
         return candidates, report
     except (OSError, ValueError, KeyError, TypeError):
         logger.warning("Discarding invalid discovery cache %s", path)
         path.unlink(missing_ok=True)
         return None
+
+
+def _restore_discovery_sources(
+    collection: dict,
+    candidates: list[Candidate],
+    destination: Path,
+    cache_root: Path,
+) -> set[str] | None:
+    """Restore and validate the ZIP archive referenced by a discovery checkpoint."""
+    archive_candidates = [candidate for candidate in candidates if candidate.archive_name is not None]
+    if not archive_candidates:
+        return set()
+    archive_names = {candidate.archive_name for candidate in archive_candidates}
+    formats = {candidate.source_format for candidate in archive_candidates}
+    if len(archive_names) != 1 or len(formats) != 1:
+        return None
+    params = collection_download_params(collection) | {"formatoRichiesta": formats.pop()}
+    archive_name = archive_names.pop()
+    if archive_name != _archive_cache_name(collection, params):
+        return None
+    _download(params, destination, cache_root / archive_name)
+    try:
+        with ZipFile(destination) as archive:
+            for candidate in archive_candidates:
+                if candidate.member_name is None:
+                    return None
+                archive.getinfo(candidate.member_name)
+    except (BadZipFile, KeyError):
+        return None
+    return {archive_name}
 
 
 def _release_assets(artifacts: list[Path]) -> list[Path]:
@@ -414,15 +448,19 @@ def _open_discovery_archive(path: Path) -> None:
 
 
 def _discover_member(
-    payload: tuple[str, str, str],
+    payload: tuple[str, str, str, str],
 ) -> tuple[Candidate | None, ConversionReport, bytes | None]:
-    collection, source_format, member = payload
+    collection, source_format, archive_name, member = payload
     if _DISCOVERY_ARCHIVE is None:
         raise RuntimeError("discovery archive was not initialized")
     raw = _DISCOVERY_ARCHIVE.read(member)
     source = f"{collection}/{member}"
     report = ConversionReport()
     candidate = discover_candidate(collection, source_format, source, raw, report)
+    if candidate:
+        candidate = replace(
+            candidate, content=None, archive_name=archive_name, member_name=member
+        )
     return candidate, report, raw if candidate is None else None
 
 
@@ -466,6 +504,7 @@ def _recover_truncated_member(
     collection: str,
     source: str,
     coverage_date: str,
+    recovery_cache: Path | None = None,
 ) -> tuple[Candidate, ConversionReport] | None:
     last_error = "invalid AKN payload"
     expected_code = _member_id(source)[1]
@@ -475,6 +514,12 @@ def _recover_truncated_member(
             raw = _fetch_direct_akn(session, source, coverage_date)
             candidate = discover_candidate(collection, "V", f"{collection}/direct/{source}", raw, report)
             if candidate and candidate.metadata.codice_redazionale == expected_code:
+                if recovery_cache:
+                    recovery_cache.parent.mkdir(parents=True, exist_ok=True)
+                    temporary = recovery_cache.with_suffix(".tmp")
+                    temporary.write_text(candidate.content or "", encoding="utf-8")
+                    temporary.replace(recovery_cache)
+                    candidate = replace(candidate, xml_path=recovery_cache, content=None)
                 return candidate, report
             last_error = (
                 report.errors[-1].message
@@ -564,17 +609,12 @@ def extract_and_push(
                     report.duplicates += 1
                 if previous_candidate and previous_candidate.rank() <= candidate.rank():
                     continue
+                if candidate.archive_name is not None or candidate.content is None:
+                    candidates_by_urn[urn] = replace(candidate, content=None)
+                    continue
                 target = spool / f"{hashlib.sha256(urn.encode()).hexdigest()}.xml"
                 target.write_text(candidate.content, encoding="utf-8")
-                candidates_by_urn[urn] = Candidate(
-                    target,
-                    candidate.collection,
-                    candidate.source_format,
-                    candidate.metadata,
-                    "",
-                    candidate.source_articles,
-                    candidate.source,
-                )
+                candidates_by_urn[urn] = replace(candidate, xml_path=target, content=None)
 
         report = ConversionReport()
         collections_downloaded = 0
@@ -590,14 +630,23 @@ def extract_and_push(
             discovery_cache = _discovery_cache_path(cache_root, collection)
             if cached_discovery := _restore_discovery(discovery_cache):
                 cached_candidates, cached_report = cached_discovery
-                _merge_discovery_report(report, cached_report)
-                retain(cached_candidates)
-                collections_downloaded += 1
-                logger.info(
-                    "Collection %d/%d done name=%r discovery_cache_hit=true candidates=%d",
-                    number, len(collections), name, len(cached_candidates),
+                archive = root / f"{safe_repo_name(name)}.zip"
+                active = _restore_discovery_sources(
+                    collection, cached_candidates, archive, cache_root
                 )
-                continue
+                archive.unlink(missing_ok=True)
+                if active is not None:
+                    active_archives.update(active)
+                    _merge_discovery_report(report, cached_report)
+                    retain(cached_candidates)
+                    collections_downloaded += 1
+                    logger.info(
+                        "Collection %d/%d done name=%r discovery_cache_hit=true candidates=%d",
+                        number, len(collections), name, len(cached_candidates),
+                    )
+                    continue
+                logger.warning("Discarding incoherent discovery cache %s", discovery_cache)
+                discovery_cache.unlink(missing_ok=True)
             archive = root / f"{safe_repo_name(name)}.zip"
             download = _download_collection_for_run(
                 collection, archive, cache_root, smoke_test=smoke_test
@@ -605,7 +654,8 @@ def extract_and_push(
             if download is None:
                 continue
             params, cache_hit = download
-            active_archives.add(_archive_cache_name(collection, params))
+            archive_name = _archive_cache_name(collection, params)
+            active_archives.add(archive_name)
             collections_downloaded += 1
             pending_truncations: list[tuple[ZipInfo, ConversionReport]] = []
 
@@ -649,7 +699,7 @@ def extract_and_push(
                 for offset in range(0, xml_seen, batch_size):
                     batch = members[offset:offset + batch_size]
                     payloads = [
-                        (name, params["formatoRichiesta"], member.filename)
+                        (name, params["formatoRichiesta"], archive_name, member.filename)
                         for member in batch
                     ]
                     results = discovery_pool.map(_discover_member, payloads, chunksize=8)
@@ -689,6 +739,12 @@ def extract_and_push(
                             name,
                             member.filename,
                             str(collection.get("dataCreazione") or ""),
+                            cache_root / "recovery" / (
+                                hashlib.sha256(
+                                    f"{name}\0{member.filename}\0{collection.get('dataCreazione') or ''}".encode()
+                                ).hexdigest()
+                                + ".xml"
+                            ),
                         )
                         if fallback:
                             candidate, fallback_report = fallback
@@ -742,7 +798,7 @@ def extract_and_push(
         canonical = select_canonical(list(candidates_by_urn.values()), report)
         report.duplicates = duplicates
         snapshot = root / "snapshot"
-        render_candidates(canonical, snapshot, report)
+        render_candidates(canonical, snapshot, report, cache_root)
         requirements = Path(__file__).parents[2] / "coverage-requirements.json"
         known_gaps = [] if smoke_test else validate_required_coverage(report, requirements)
         manifest = write_indexes(

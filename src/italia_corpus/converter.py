@@ -10,6 +10,7 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
+from zipfile import ZipFile
 
 from .akn import (
     AKN_NS, AknFrontmatter, akn_xml_to_markdown, count_akn_articles, extract_frontmatter,
@@ -22,16 +23,18 @@ _UPSTREAM_TRUNCATION_SIZE = 1024 * 1024
 UPSTREAM_TRUNCATION_ERROR = "source payload is exactly 1 MiB and appears truncated"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Candidate:
     xml_path: Path
     collection: str
     source_format: str
     metadata: AknFrontmatter
-    content: str
+    content: str | None
     source_articles: int
     source: str = ""
     path_suffix: str = ""
+    archive_name: str | None = None
+    member_name: str | None = None
 
     @property
     def repo_path(self) -> str:
@@ -102,6 +105,29 @@ def _read_xml(path: Path) -> str:
         return raw.decode("utf-8", errors="replace")
 
 
+def _source_xml_text(raw: bytes) -> str:
+    content = raw.decode("utf-8", errors="replace")
+    xml_bytes = raw
+    if not content.lstrip().startswith("<"):
+        try:
+            decoded = base64.b64decode(content, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            if len(raw) == _UPSTREAM_TRUNCATION_SIZE:
+                raise ValueError(UPSTREAM_TRUNCATION_ERROR) from exc
+            raise ValueError("payload is not XML") from exc
+        prefix = decoded.lstrip().lower()
+        if prefix.startswith((b"<html", b"<!doctype html")):
+            raise ValueError("base64-wrapped HTML, not AKN XML")
+        try:
+            content = decoded.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("base64 payload is not UTF-8 XML") from exc
+        xml_bytes = decoded
+    if _ILLEGAL_XML10.search(xml_bytes):
+        return _ILLEGAL_XML10.sub(b"", xml_bytes).decode("utf-8", errors="replace")
+    return content
+
+
 def discover_candidate(
     collection: str,
     source_format: str,
@@ -112,34 +138,14 @@ def discover_candidate(
     """Parse one XML candidate without materializing its collection on disk."""
     report.xml_received += 1
     report.increment(collection, "xml_received")
-    content = raw.decode("utf-8", errors="replace")
-    xml_bytes = raw
     try:
-        if not content.lstrip().startswith("<"):
-            try:
-                decoded = base64.b64decode(content, validate=True)
-            except (ValueError, binascii.Error) as exc:
-                if len(raw) == _UPSTREAM_TRUNCATION_SIZE:
-                    raise ValueError(UPSTREAM_TRUNCATION_ERROR) from exc
-                raise ValueError("payload is not XML") from exc
-            prefix = decoded.lstrip().lower()
-            if prefix.startswith((b"<html", b"<!doctype html")):
-                raise ValueError("base64-wrapped HTML, not AKN XML")
-            try:
-                content = decoded.decode("utf-8")
-            except UnicodeDecodeError as exc:
-                raise ValueError("base64 payload is not UTF-8 XML") from exc
-            xml_bytes = decoded
+        content = _source_xml_text(raw)
         try:
             xml_root = parse_akn_xml(content)
         except ET.ParseError:
-            content = _ILLEGAL_XML10.sub(b"", xml_bytes).decode("utf-8", errors="replace")
-            try:
-                xml_root = parse_akn_xml(content)
-            except ET.ParseError as exc:
-                if len(raw) == _UPSTREAM_TRUNCATION_SIZE:
-                    raise ValueError(UPSTREAM_TRUNCATION_ERROR) from exc
-                raise
+            if len(raw) == _UPSTREAM_TRUNCATION_SIZE:
+                raise ValueError(UPSTREAM_TRUNCATION_ERROR) from None
+            raise
         if xml_root.tag != f"{{{AKN_NS}}}akomaNtoso":
             raise ValueError("XML root is not Akoma Ntoso")
         metadata = extract_frontmatter(xml_root, source_format)
@@ -195,14 +201,19 @@ def select_canonical(candidates: list[Candidate], report: ConversionReport) -> l
     ]
 
 
-def render_candidates(candidates: list[Candidate], output: Path, report: ConversionReport) -> dict[str, str]:
+def render_candidates(
+    candidates: list[Candidate],
+    output: Path,
+    report: ConversionReport,
+    archive_root: Path | None = None,
+) -> dict[str, str]:
     urn_index = {candidate.metadata.urn or "": candidate.repo_path for candidate in candidates}
     output.mkdir(parents=True, exist_ok=True)
-    for candidate in sorted(candidates, key=lambda c: c.repo_path):
+
+    def render(candidate: Candidate, content: str) -> None:
         target = output / candidate.repo_path
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
-            content = candidate.content or _read_xml(candidate.xml_path)
             fm, markdown, stats = akn_xml_to_markdown(
                 content, urn_index, candidate.repo_path, candidate.source_format
             )
@@ -231,6 +242,30 @@ def render_candidates(candidates: list[Candidate], output: Path, report: Convers
             report.errors.append(ConversionError(
                 str(candidate.xml_path), str(exc), candidate.collection, "render_error"
             ))
+
+    local_candidates = []
+    archive_candidates: dict[str, list[Candidate]] = {}
+    for candidate in sorted(candidates, key=lambda c: c.repo_path):
+        if candidate.archive_name is None:
+            local_candidates.append(candidate)
+        else:
+            archive_candidates.setdefault(candidate.archive_name, []).append(candidate)
+
+    for candidate in local_candidates:
+        if candidate.content is not None:
+            render(candidate, candidate.content)
+        else:
+            render(candidate, _read_xml(candidate.xml_path))
+
+    for archive_name, grouped in sorted(archive_candidates.items()):
+        if archive_root is None:
+            raise RuntimeError(f"archive root is required for {archive_name}")
+        with ZipFile(archive_root / archive_name) as archive:
+            for candidate in grouped:
+                if candidate.member_name is None:
+                    raise RuntimeError(f"missing ZIP member reference for {candidate.source}")
+                content = _source_xml_text(archive.read(candidate.member_name))
+                render(candidate, content)
     return urn_index
 
 
