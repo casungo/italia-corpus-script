@@ -55,14 +55,21 @@ Le release sono immutabili e denominate `snapshot-YYYY-MM-DD`.
 
 ## Container persistente
 
-Il container sostituisce il runner GitHub per le esecuzioni complete. Tiene ZIP verificati e
-download `.partial` in un volume durante i retry; dopo uno snapshot riuscito elimina le edizioni
-superate e conserva solo i dati della versione corrente.
-Non espone porte HTTP e non contiene token nell'immagine.
+Il container sostituisce il runner GitHub per le esecuzioni complete. Il loop di controllo vive
+interamente nel processo Python (`python -m italia_corpus --loop`), quindi `docker stop` termina
+snapshot e attese in modo pulito. Tiene ZIP verificati e download `.partial` in un volume durante
+i retry; dopo uno snapshot riuscito elimina le edizioni superate e conserva solo i dati della
+versione corrente. Non espone porte HTTP e non contiene token nell'immagine.
+
+Il container gira come utente non privilegiato con UID/GID 1000: la directory montata in `/data`
+deve essere scrivibile per quell'utente (`chown -R 1000:1000`). Il loop aggiorna `/data/.heartbeat`
+a ogni iterazione e il healthcheck di `compose.yaml` segnala il container come unhealthy se il
+file resta fermo più di tre giorni.
 
 ```bash
 cp .env.example .env
 printf '%s' 'github_pat_...' > github_token
+chown 1000:1000 github_token
 docker compose up -d --build
 docker compose logs -f
 ```
@@ -117,7 +124,11 @@ italia-corpus-pipeline --dry-run --smoke-test /percorso/con-spazio-sufficiente
 italia-corpus-pipeline --dry-run --download-cache /percorso/cache /percorso/con-spazio-sufficiente
 ```
 
-Variabili obbligatorie: `GITHUB_USERNAME`, `GITHUB_TARGET_REPO` e un token tra `GITHUB_TOKEN_1` … `GITHUB_TOKEN_20` o `GITHUB_TOKEN`. `GITHUB_TARGET_REPO` accetta sia `italia-corpus` sia `owner/italia-corpus`; se deve creare la repository, la crea pubblica. Il token viene passato a Git tramite configurazione di processo e non viene inserito nel clone URL.
+Variabili obbligatorie: `GITHUB_USERNAME`, `GITHUB_TARGET_REPO` e un token tra `GITHUB_TOKEN_1` …
+`GITHUB_TOKEN_20`, `GITHUB_TOKEN`, oppure un token file letto da `GITHUB_TOKEN_FILE` o
+`PUBLISH_TOKEN_FILE` (che vale anche per `GIT_TARGET_TOKEN`). `GITHUB_TARGET_REPO` accetta sia
+`italia-corpus` sia `owner/italia-corpus`; se deve creare la repository, la crea pubblica. Il token
+viene passato a Git tramite configurazione di processo e non viene inserito nel clone URL.
 
 Con `--dry-run` la pipeline non inizializza GitHub e non crea commit, tag o release. Snapshot e artifact restano nella directory `italia-corpus-dry-run-*` stampata a fine esecuzione; `--baseline` abilita i controlli di regressione contro un manifest precedente.
 
@@ -125,11 +136,12 @@ Con `--dry-run` la pipeline non inizializza GitHub e non crea commit, tag o rele
 
 Gli ZIP validi vengono conservati per nome, formato e `dataCreazione` upstream. Ogni archivio ha
 un checksum SHA-256 ed è registrato in `inventory.json`; prima del riuso vengono verificati
-checksum, inventario e CRC di tutti i membri. Un retry dello stesso snapshot riusa quindi solo
-pacchetti integri della medesima edizione; `--download-cache` permette di collocare esplicitamente
-questa cache fuori dalla directory di lavoro. Il container conserva la cache anche dopo un
-tentativo fallito e ripete il full run in autonomia. I log riportano avanzamento per collezione,
-formato effettivo, cache hit/miss, XML letti e tempi.
+checksum e inventario, mentre i CRC dei membri vengono controllati alla lettura durante la
+conversione, così il riuso non ri-decomprime gli archivi. Un retry dello stesso snapshot riusa
+quindi solo pacchetti integri della medesima edizione; `--download-cache` permette di collocare
+esplicitamente questa cache fuori dalla directory di lavoro. Il container conserva la cache anche
+dopo un tentativo fallito e ripete il full run in autonomia. I log riportano avanzamento per
+collezione, formato effettivo, cache hit/miss, XML letti e tempi.
 
 ## CLI per gli utenti
 

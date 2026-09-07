@@ -1,10 +1,24 @@
 services:
   italia-corpus:
     build: .
+    init: true
     restart: unless-stopped
     env_file: ${ITALIA_CORPUS_ENV_FILE:-.env}
     volumes:
       - ${ITALIA_CORPUS_DATA_DIR:-./data}:/data
+    # /data/work non contiene solo uno spool effimero: ci finiscono snapshot renderizzato,
+    # artifact e l'archivio della collezione in corso. Misurato su uno smoke run: ~2 GB per
+    # 11k atti; un run completo scala oltre i 10 GB, più della RAM di un host tipico.
+    # Resti su disco; per esperimenti su dati piccoli puoi montare tmpfs a mano:
+    # tmpfs:
+    #   - /data/work:size=4g
+    # Il loop tocca /data/.heartbeat a ogni iterazione. La soglia copre anche uno
+    # snapshot completo di più giorni; non impostare CHECK_INTERVAL_SECONDS sopra i 3 giorni.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, sys, time; p = '/data/.heartbeat'; sys.exit(0 if os.path.isfile(p) and time.time() - os.path.getmtime(p) < 3 * 86400 else 1)"]
+      interval: 1h
+      timeout: 10s
+      start_period: 5m
     secrets:
       - github_token
 
