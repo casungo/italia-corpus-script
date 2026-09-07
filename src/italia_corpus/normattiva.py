@@ -2,12 +2,12 @@ from collections import defaultdict
 
 import requests
 
-from .config import COLLECTIONS_URL, logger
+from .config import COLLECTIONS_URL, DOWNLOAD_TIMEOUT, logger
 
 
 def fetch_predefined_collections() -> list[dict]:
     """GET /collections/collection-predefinite."""
-    response = requests.get(COLLECTIONS_URL)
+    response = requests.get(COLLECTIONS_URL, timeout=DOWNLOAD_TIMEOUT)
     response.raise_for_status()
     data = response.json()
     if not isinstance(data, list):
