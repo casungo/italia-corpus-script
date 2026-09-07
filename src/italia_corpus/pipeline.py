@@ -67,13 +67,15 @@ def _sha256(path: Path) -> str:
 
 
 def _verify_zip(path: Path) -> tuple[str, int]:
-    """Read every member so truncated data and CRC errors fail before cache reuse."""
+    """Checksum the bytes and validate the central directory.
+
+    Member CRC errors surface as BadZipFile when discovery reads each member,
+    so decompressing everything here would only double the cost of cache hits.
+    """
     with ZipFile(path) as archive:
         members = list(safe_zip_members(archive))
         if not members:
             raise ValueError("ZIP archive has no files")
-        if bad_member := archive.testzip():
-            raise ValueError(f"corrupt ZIP member: {bad_member}")
     return _sha256(path), len(members)
 
 

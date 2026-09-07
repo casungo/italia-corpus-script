@@ -871,7 +871,7 @@ def test_download_discards_cache_when_checksum_inventory_mismatches(
     assert not cache.exists()
 
 
-def test_download_verifies_every_cached_zip_member(tmp_path: Path, monkeypatch) -> None:
+def test_cached_zip_member_corruption_surfaces_at_read_time(tmp_path: Path, monkeypatch) -> None:
     cache = tmp_path / "cache.zip"
     with zipfile.ZipFile(cache, "w", compression=zipfile.ZIP_STORED) as archive:
         archive.writestr("act.xml", "unique member payload")
@@ -884,15 +884,16 @@ def test_download_verifies_every_cached_zip_member(tmp_path: Path, monkeypatch) 
         "archives": {"cache.zip": {"sha256": digest, "size": cache.stat().st_size,
                                            "members": 1}},
     }))
-    monkeypatch.setattr(pipeline, "DOWNLOAD_MAX_ATTEMPTS", 1)
     monkeypatch.setattr(
         pipeline.requests,
         "get",
-        lambda *args, **kwargs: (_ for _ in ()).throw(pipeline.requests.RequestException("offline")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("cache hit must not download")),
     )
-    with pytest.raises(RuntimeError, match="offline"):
-        pipeline._download({"nome": "Cached", "formatoRichiesta": "V"}, tmp_path / "out.zip", cache)
-    assert not cache.exists()
+    destination = tmp_path / "out.zip"
+    assert pipeline._download({"nome": "Cached", "formatoRichiesta": "V"}, destination, cache) is True
+    with zipfile.ZipFile(destination) as archive:
+        with pytest.raises(zipfile.BadZipFile):
+            archive.read("act.xml")
 
 
 def test_collection_download_falls_back_to_an_advertised_format(
