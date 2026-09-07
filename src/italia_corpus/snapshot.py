@@ -331,9 +331,11 @@ def build_artifacts(snapshot: Path, artifacts: Path) -> list[Path]:
             if path.is_file():
                 info = archive.gettarinfo(str(path), path.relative_to(snapshot).as_posix())
                 info.mtime = 0
+                info.uid = info.gid = 0
+                info.uname = info.gname = ""
                 with path.open("rb") as source:
                     archive.addfile(info, source)
-    compressor = zstandard.ZstdCompressor(level=10, threads=0)
+    compressor = zstandard.ZstdCompressor(level=10, threads=-1)
     outputs: list[Path] = []
     for archive_source, name in ((tar_path, "markdown.tar.zst"),):
         target = artifacts / name
@@ -386,11 +388,13 @@ def build_legacy_archive(repository: Path, legacy_dirs: list[str], artifacts: Pa
                     relative = path.relative_to(repository).as_posix()
                     info = archive.gettarinfo(str(path), relative)
                     info.mtime = 0
+                    info.uid = info.gid = 0
+                    info.uname = info.gname = ""
                     with path.open("rb") as stream:
                         archive.addfile(info, stream)
     destination = artifacts / "legacy-corpus.tar.zst"
     with tar_path.open("rb") as input_stream, destination.open("wb") as output_stream:
-        zstandard.ZstdCompressor(level=10, threads=0).copy_stream(input_stream, output_stream)
+        zstandard.ZstdCompressor(level=10, threads=-1).copy_stream(input_stream, output_stream)
     tar_path.unlink()
     sums = artifacts / "SHA256SUMS"
     with sums.open("a", encoding="ascii") as stream:
