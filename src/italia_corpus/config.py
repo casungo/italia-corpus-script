@@ -1,5 +1,6 @@
 import logging
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -12,7 +13,6 @@ PUBLISH_TARGET = os.getenv("PUBLISH_TARGET", "github").strip().casefold()
 GIT_TARGET_URL = os.getenv("GIT_TARGET_URL", "").strip()
 GIT_TARGET_BRANCH = os.getenv("GIT_TARGET_BRANCH", "main").strip() or "main"
 GIT_TARGET_USERNAME = os.getenv("GIT_TARGET_USERNAME", "x-access-token").strip()
-GIT_TARGET_TOKEN = os.getenv("GIT_TARGET_TOKEN", "").strip()
 BUFFER_PATH = os.getenv("BUFFER_PATH")
 GIT_AUTHOR_NAME = os.getenv("GIT_AUTHOR_NAME", GITHUB_USERNAME)
 GIT_AUTHOR_EMAIL = os.getenv(
@@ -34,6 +34,24 @@ logging.basicConfig(
     format="%(levelname)s [%(name)s] %(message)s",
 )
 logger = logging.getLogger("italia_corpus")
+
+
+def _secret_file_token() -> str:
+    """Read the publish token from PUBLISH_TOKEN_FILE or GITHUB_TOKEN_FILE."""
+    for name in ("PUBLISH_TOKEN_FILE", "GITHUB_TOKEN_FILE"):
+        path = os.getenv(name, "").strip()
+        if not path:
+            continue
+        try:
+            return Path(path).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            logger.warning("Cannot read %s=%s: %s", name, path, exc)
+            return ""
+    return ""
+
+
+SECRET_FILE_TOKEN = _secret_file_token()
+GIT_TARGET_TOKEN = os.getenv("GIT_TARGET_TOKEN", "").strip() or SECRET_FILE_TOKEN
 
 
 def target_repo_full_name(repo_name: str, username: str | None = GITHUB_USERNAME) -> str:

@@ -41,6 +41,19 @@ def main() -> None:
         help="Controlla le edizioni Normattiva senza scaricare o pubblicare.",
     )
     parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Modalità container: valida la configurazione, esegue uno snapshot ed esce.",
+    )
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        help=(
+            "Modalità container: controlla le edizioni ogni CHECK_INTERVAL_SECONDS ed esegue "
+            "snapshot finché il processo viene terminato."
+        ),
+    )
+    parser.add_argument(
         "root_path",
         nargs="?",
         default=os.getenv("ROOT_PATH"),
@@ -53,6 +66,12 @@ def main() -> None:
         parser.error("--smoke-test non può usare --baseline")
     if args.check_upstream and (args.dry_run or args.smoke_test or args.baseline):
         parser.error("--check-upstream non usa --dry-run, --smoke-test o --baseline")
+    if args.once or args.loop:
+        if args.dry_run or args.smoke_test or args.baseline or args.check_upstream:
+            parser.error(
+                "--once e --loop non si combinano con --dry-run, --smoke-test, "
+                "--baseline o --check-upstream"
+            )
     root_path = (args.root_path or "").strip()
     if not root_path:
         root_path = (EXTRACTION_BUFFER_PATH or "").strip()
@@ -61,6 +80,17 @@ def main() -> None:
     if args.check_upstream:
         cache_root = args.download_cache or Path(root_path) / "download-cache"
         raise SystemExit(0 if upstream_collections_are_cached(cache_root) else 1)
+    if args.once or args.loop:
+        from .runner import run_loop, run_once
+
+        cache_root = args.download_cache or Path(
+            os.getenv("DOWNLOAD_CACHE_PATH") or (Path(root_path) / "download-cache")
+        )
+        if args.loop:
+            run_loop(root_path, cache_root)
+        else:
+            run_once(root_path, cache_root)
+        return
 
     logger.info("Root path: %s", root_path)
     gh = None

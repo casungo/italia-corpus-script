@@ -7,11 +7,11 @@ from github.AuthenticatedUser import AuthenticatedUser
 from github.Repository import Repository
 from urllib3.util import Retry
 
-from .config import GITHUB_USERNAME, logger, target_repo_full_name
+from .config import GITHUB_USERNAME, SECRET_FILE_TOKEN, logger, target_repo_full_name
 
 
 def primary_token() -> str:
-    """Return the first available token (GITHUB_TOKEN_1/2/... or GITHUB_TOKEN)."""
+    """Return the first available token (GITHUB_TOKEN_1/2/..., GITHUB_TOKEN, or a token file)."""
     i = 1
     while True:
         t = os.getenv(f"GITHUB_TOKEN_{i}", "").strip()
@@ -20,7 +20,7 @@ def primary_token() -> str:
         if i > 20:
             break
         i += 1
-    return os.getenv("GITHUB_TOKEN", "").strip()
+    return os.getenv("GITHUB_TOKEN", "").strip() or SECRET_FILE_TOKEN
 
 
 def github_client() -> Github:
