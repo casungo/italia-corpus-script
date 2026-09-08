@@ -849,7 +849,7 @@ def extract_and_push(
         supplemental = (
             []
             if smoke_test
-            else fetch_missing_sources(article_counts, root / "sources" / "supplemental")
+            else fetch_missing_sources(article_counts, cache_root / "supplemental")
         )
         retain(discover_candidates(supplemental, report))
         duplicates = report.duplicates
@@ -858,6 +858,8 @@ def extract_and_push(
         snapshot = root / "snapshot"
         render_candidates(canonical, snapshot, report, cache_root)
         requirements = Path(__file__).parents[2] / "coverage-requirements.json"
+        # prima la coerenza del report: un render error reale non deve essere sepolto dal gate di copertura
+        validate_report(report, previous, Path(__file__).parents[2] / "quality-exceptions.json")
         known_gaps = [] if smoke_test else validate_required_coverage(report, requirements)
         manifest = write_indexes(
             snapshot,
@@ -869,7 +871,6 @@ def extract_and_push(
             memberships,
         )
         write_delta(previous, manifest, snapshot)
-        validate_report(report, previous, Path(__file__).parents[2] / "quality-exceptions.json")
         artifacts = build_artifacts(snapshot, root / "artifacts")
         if dry_run:
             shutil.rmtree(root / "sources", ignore_errors=True)
