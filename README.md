@@ -14,12 +14,17 @@ Ogni esecuzione completa tutte le collezioni prima di modificare il repository:
 5. genera manifest, indici, delta e artifact;
 6. applica i quality gate e pubblica un solo commit, tag e release.
 
-XML scartati, metadati obbligatori mancanti, documenti scomparsi, regressioni nei conteggi o nei link interrompono la pubblicazione. Le eccezioni intenzionali devono essere registrate in `quality-exceptions.json` con `metric`, `collection`, `expected_value`, `reason` ed `expires`: un valore diverso resta fail-closed.
+XML scartati, metadati obbligatori mancanti, documenti scomparsi, regressioni nei conteggi o nei link interrompono la pubblicazione. I link esterni (riferimenti ad atti fuori dal corpus) possono crescere solo se i link interni crescono almeno quanto loro: un aumento alimentato da espansione organica passa, un aumento esterno-dominato no. Le eccezioni intenzionali devono essere registrate in `quality-exceptions.json` con `metric`, `collection`, `expected_value`, `reason` ed `expires`: un valore diverso resta fail-closed.
 
 Se un payload vigente è troncato esattamente a 1 MiB, la pipeline prova l'esportazione Akoma Ntoso
 del singolo atto e la accetta solo dopo la normale validazione.
 
-Gli atti fondamentali segnalati nelle issue #2 e #3 hanno gate dedicati. Se DPR 380/2001, DPR 151/2011 o D.Lgs. 152/2006 non arrivano dalle collezioni, vengono acquisiti dal testo vigente Normattiva. Le NTC 2018 (`18A00716`) vengono estratte dal PDF ufficiale della Gazzetta e marcate come testo originario, non consolidato con il decreto modificativo del 2023.
+Gli atti fondamentali segnalati nelle issue #2 e #3 hanno gate dedicati. Se DPR 380/2001, DPR 151/2011
+o D.Lgs. 152/2006 non arrivano dalle collezioni, vengono acquisiti dal testo vigente Normattiva.
+Stesso trattamento per Costituzione (`047U0001`), legge 400/1988 e legge 241/1990, i target di
+riferimento più ricorrenti fuori collezione. Le NTC 2018 (`18A00716`) vengono estratte dal PDF
+ufficiale della Gazzetta e marcate come testo originario, non consolidato con il decreto
+modificativo del 2023.
 
 ## Formato
 

@@ -133,10 +133,17 @@ def validate_report(report: ConversionReport, previous: dict | None = None,
             if new < prior and not _is_allowed(allowed, metric, "*", new):
                 failures.append(f"{metric} regressed from {prior} to {new}")
         prior_external = int(old.get("external_links", 0))
-        if report.external_links > prior_external and not _is_allowed(
-            allowed, "external_links", "*", report.external_links
+        external_growth = report.external_links - prior_external
+        internal_growth = report.internal_links - int(old.get("internal_links", 0))
+        if (
+            external_growth > 0
+            and internal_growth < external_growth
+            and not _is_allowed(allowed, "external_links", "*", report.external_links)
         ):
-            failures.append(f"external_links increased from {prior_external} to {report.external_links}")
+            failures.append(
+                f"external_links increased from {prior_external} to {report.external_links} "
+                f"while internal_links grew by only {internal_growth}"
+            )
         for path, digest in previous.get("files", {}).items():
             if path not in report.hashes and not _is_allowed(allowed, "removed_files", "*", 1):
                 failures.append(f"previous document disappeared: {path} ({digest[:12]})")

@@ -1047,3 +1047,17 @@ def test_upstream_check_detects_changed_package(tmp_path: Path, monkeypatch) -> 
             collections[0]["numeroAtti"] = 2922
         monkeypatch.setattr(pipeline, "_collection_fingerprint", probe)
         assert pipeline.upstream_collections_are_cached(tmp_path) is False
+
+
+def test_quality_gate_tolerates_external_growth_only_with_internal_growth() -> None:
+    def report(external: int, internal: int) -> ConversionReport:
+        return ConversionReport(
+            xml_received=1, converted=1, urns=1, editorial_codes=1,
+            external_links=external, internal_links=internal,
+        )
+
+    previous = {"counts": {"external_links": 1000, "internal_links": 5000}}
+    validate_report(report(1004, 6000), previous)
+    validate_report(report(990, 5000), previous)
+    with pytest.raises(QualityGateError, match="internal_links grew by only 10"):
+        validate_report(report(1050, 5010), previous)

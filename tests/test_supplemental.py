@@ -18,3 +18,13 @@ def test_normattiva_body_and_supplemental_akn() -> None:
     )
     assert "Titolo" in markdown and "Testo vigente" in markdown
     assert stats.articles == 1
+
+
+def test_recurring_external_targets_are_supplemental_sources() -> None:
+    from italia_corpus.supplemental import SOURCES
+
+    by_code = {source["code"]: source for source in SOURCES}
+    assert by_code["047U0001"]["urn"] == "urn:nir:stato:costituzione:1947-12-27;const"
+    assert by_code["088G0458"]["urn"] == "urn:nir:stato:legge:1988-08-23;400"
+    assert by_code["090G0294"]["urn"] == "urn:nir:stato:legge:1990-08-07;241"
+    assert int(by_code["047U0001"]["min_articles"]) >= 100
