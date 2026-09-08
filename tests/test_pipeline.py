@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from italia_corpus.akn import AKN_NS, akn_xml_to_markdown
+from italia_corpus import converter
 from italia_corpus.converter import (
     ConversionError, ConversionReport, discover_candidate, discover_candidates, render_candidates,
     select_canonical,
@@ -958,3 +959,40 @@ def test_snapshot_fails_when_collection_download_fails(tmp_path: Path, monkeypat
             tmp_path / "cache",
             smoke_test=False,
         )
+
+
+def test_parallel_render_matches_serial(tmp_path: Path, monkeypatch) -> None:
+    archive_path = tmp_path / "bench.zip"
+    template = (FIXTURES / "codice_penale.xml").read_text(encoding="utf-8")
+    raws = []
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        for number in range(converter.RENDER_POOL_MIN_MEMBERS + 32):
+            raw = template.replace("art-575", f"art-{575 + number}", 1)
+            member = f"2026-01-01_{number:04d}A00001.xml"
+            archive.writestr(member, raw)
+            raws.append((member, raw))
+
+    def candidates_from():
+        found = []
+        for member, raw in raws:
+            report = ConversionReport()
+            candidate = discover_candidate("Bench", "V", f"Bench/{member}", raw.encode(), report)
+            assert candidate is not None
+            found.append(replace(
+                candidate, content=None, archive_name="bench.zip", member_name=member
+            ))
+        return found
+
+    serial_report, parallel_report = ConversionReport(), ConversionReport()
+    monkeypatch.setattr(converter, "RENDER_POOL_MIN_MEMBERS", 10**9)
+    converter.render_candidates(candidates_from(), tmp_path / "serial", serial_report, tmp_path)
+    monkeypatch.setattr(converter, "RENDER_POOL_MIN_MEMBERS", 1)
+    converter.render_candidates(candidates_from(), tmp_path / "parallel", parallel_report, tmp_path)
+
+    for field_name in ("converted", "skipped", "articles", "internal_links", "external_links",
+                       "urns", "editorial_codes", "hashes", "document_articles"):
+        assert getattr(parallel_report, field_name) == getattr(serial_report, field_name), field_name
+    assert parallel_report.errors == serial_report.errors
+    for serial_file in (tmp_path / "serial").rglob("*.md"):
+        parallel_file = tmp_path / "parallel" / serial_file.relative_to(tmp_path / "serial")
+        assert parallel_file.read_bytes() == serial_file.read_bytes()

@@ -8,6 +8,7 @@ import hashlib
 import os
 import re
 import xml.etree.ElementTree as ET
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from zipfile import ZipFile
@@ -201,6 +202,104 @@ def select_canonical(candidates: list[Candidate], report: ConversionReport) -> l
     ]
 
 
+@dataclass
+class _RenderOutcome:
+    repo_path: str
+    collection: str
+    source: str
+    converted: bool = False
+    articles: int = 0
+    internal_links: int = 0
+    external_links: int = 0
+    unresolved_links: int = 0
+    unsupported_tags: tuple[str, ...] = ()
+    sha256: str = ""
+    anchors: tuple[str, ...] = ()
+    article_intervals: list[dict[str, str | None]] = field(default_factory=list)
+    has_urn: bool = False
+    has_editorial_code: bool = False
+    error: ConversionError | None = None
+
+
+def _render_to_outcome(
+    candidate: Candidate, content: str, urn_index: dict[str, str], output_dir: str
+) -> _RenderOutcome:
+    outcome = _RenderOutcome(
+        repo_path=candidate.repo_path,
+        collection=candidate.collection,
+        source=str(candidate.xml_path),
+    )
+    try:
+        fm, markdown, stats = akn_xml_to_markdown(
+            content, urn_index, candidate.repo_path, candidate.source_format
+        )
+        if not markdown.partition("---\n")[2].strip("-\n "):
+            raise ValueError("empty rendered document")
+        target = Path(output_dir) / candidate.repo_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(markdown, encoding="utf-8", newline="\n")
+        outcome.converted = True
+        outcome.articles = stats.articles
+        outcome.internal_links = stats.internal_links
+        outcome.external_links = stats.external_links
+        outcome.unresolved_links = stats.unresolved_links
+        outcome.unsupported_tags = tuple(stats.unsupported_tags or ())
+        outcome.sha256 = hashlib.sha256(markdown.encode()).hexdigest()
+        outcome.anchors = tuple(re.findall(r'<a id="([^"]+)"', markdown))
+        outcome.article_intervals = stats.article_intervals
+        outcome.has_urn = bool(fm.urn)
+        outcome.has_editorial_code = bool(fm.codice_redazionale)
+    except Exception as exc:
+        outcome.error = ConversionError(
+            str(candidate.xml_path), str(exc), candidate.collection, "render_error"
+        )
+    return outcome
+
+
+def _apply_outcome(report: ConversionReport, outcome: _RenderOutcome) -> None:
+    if outcome.error is not None:
+        report.skipped += 1
+        report.increment(outcome.collection, "skipped")
+        report.errors.append(outcome.error)
+        return
+    report.converted += 1
+    report.increment(outcome.collection, "converted")
+    report.articles += outcome.articles
+    report.increment(outcome.collection, "articles", outcome.articles)
+    report.internal_links += outcome.internal_links
+    report.external_links += outcome.external_links
+    report.unresolved_links += outcome.unresolved_links
+    report.unsupported_tags.update(outcome.unsupported_tags)
+    report.hashes[outcome.repo_path] = outcome.sha256
+    report.document_articles[outcome.repo_path] = outcome.articles
+    report.document_anchors[outcome.repo_path] = list(outcome.anchors)
+    report.article_intervals[outcome.repo_path] = outcome.article_intervals
+    report.urns += outcome.has_urn
+    report.editorial_codes += outcome.has_editorial_code
+
+
+_RENDER_ARCHIVE: ZipFile | None = None
+_RENDER_OUTPUT = ""
+_RENDER_URN_INDEX: dict[str, str] = {}
+
+
+def _open_render_archive(path: str, output: str, urn_index: dict[str, str]) -> None:
+    global _RENDER_ARCHIVE, _RENDER_OUTPUT, _RENDER_URN_INDEX
+    _RENDER_ARCHIVE = ZipFile(path)
+    _RENDER_OUTPUT = output
+    _RENDER_URN_INDEX = urn_index
+
+
+def _render_archive_member(candidate: Candidate) -> _RenderOutcome:
+    if _RENDER_ARCHIVE is None or candidate.member_name is None:
+        raise RuntimeError("render archive was not initialized")
+    content = _source_xml_text(_RENDER_ARCHIVE.read(candidate.member_name))
+    return _render_to_outcome(candidate, content, _RENDER_URN_INDEX, _RENDER_OUTPUT)
+
+
+RENDER_POOL_MIN_MEMBERS = 512
+
+
 def render_candidates(
     candidates: list[Candidate],
     output: Path,
@@ -211,37 +310,7 @@ def render_candidates(
     output.mkdir(parents=True, exist_ok=True)
 
     def render(candidate: Candidate, content: str) -> None:
-        target = output / candidate.repo_path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            fm, markdown, stats = akn_xml_to_markdown(
-                content, urn_index, candidate.repo_path, candidate.source_format
-            )
-            if not markdown.partition("---\n")[2].strip("-\n "):
-                raise ValueError("empty rendered document")
-            target.write_text(markdown, encoding="utf-8", newline="\n")
-            report.converted += 1
-            report.increment(candidate.collection, "converted")
-            report.articles += stats.articles
-            report.increment(candidate.collection, "articles", stats.articles)
-            report.internal_links += stats.internal_links
-            report.external_links += stats.external_links
-            report.unresolved_links += stats.unresolved_links
-            report.unsupported_tags.update(stats.unsupported_tags or ())
-            report.hashes[candidate.repo_path] = hashlib.sha256(markdown.encode()).hexdigest()
-            report.document_articles[candidate.repo_path] = stats.articles
-            report.document_anchors[candidate.repo_path] = re.findall(
-                r'<a id="([^"]+)"', markdown
-            )
-            report.article_intervals[candidate.repo_path] = stats.article_intervals
-            report.urns += bool(fm.urn)
-            report.editorial_codes += bool(fm.codice_redazionale)
-        except Exception as exc:
-            report.skipped += 1
-            report.increment(candidate.collection, "skipped")
-            report.errors.append(ConversionError(
-                str(candidate.xml_path), str(exc), candidate.collection, "render_error"
-            ))
+        _apply_outcome(report, _render_to_outcome(candidate, content, urn_index, str(output)))
 
     local_candidates = []
     archive_candidates: dict[str, list[Candidate]] = {}
@@ -257,15 +326,27 @@ def render_candidates(
         else:
             render(candidate, _read_xml(candidate.xml_path))
 
+    render_workers = min(8, max(1, (os.cpu_count() or 1) * 2))
     for archive_name, grouped in sorted(archive_candidates.items()):
         if archive_root is None:
             raise RuntimeError(f"archive root is required for {archive_name}")
-        with ZipFile(archive_root / archive_name) as archive:
-            for candidate in grouped:
-                if candidate.member_name is None:
-                    raise RuntimeError(f"missing ZIP member reference for {candidate.source}")
-                content = _source_xml_text(archive.read(candidate.member_name))
-                render(candidate, content)
+        archive_path = archive_root / archive_name
+        if len(grouped) < RENDER_POOL_MIN_MEMBERS:
+            with ZipFile(archive_path) as archive:
+                for candidate in grouped:
+                    if candidate.member_name is None:
+                        raise RuntimeError(f"missing ZIP member reference for {candidate.source}")
+                    content = _source_xml_text(archive.read(candidate.member_name))
+                    render(candidate, content)
+            continue
+        with ProcessPoolExecutor(
+            max_workers=render_workers,
+            initializer=_open_render_archive,
+            initargs=(str(archive_path), str(output), urn_index),
+        ) as pool:
+            chunk = max(1, len(grouped) // (render_workers * 8))
+            for outcome in pool.map(_render_archive_member, grouped, chunksize=chunk):
+                _apply_outcome(report, outcome)
     return urn_index
 
 
