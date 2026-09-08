@@ -9,6 +9,13 @@ from typing import Literal, overload
 
 NORMATTIVA_URI_RES = "https://www.normattiva.it/uri-res/N2Ls"
 
+# Forme di riferimento note che gli atti usano al posto dell'URN canonico con cui l'atto
+# è catalogato nel corpus. La Costituzione, ad esempio, è catalogata come legge
+# costituzionale 1/1947 ma citata dappertutto come "...costituzione:1947-12-27;const".
+URN_ALIASES: dict[str, str] = {
+    "urn:nir:stato:costituzione:1947-12-27;const": "urn:nir:stato:legge.costituzionale:1947-02-21;1",
+}
+
 _HREF_ENCODE: dict[str, str] = {
     " ": "%20",
     "(": "%28",
@@ -98,6 +105,9 @@ def resolve_ref(
     urn, _, fragment = href.partition("#")
     lookup_urn = href_to_urn(href) or urn
     target = ctx.urn_index.get(lookup_urn)
+    if not target and lookup_urn in URN_ALIASES:
+        lookup_urn = URN_ALIASES[lookup_urn]
+        target = ctx.urn_index.get(lookup_urn)
     if target:
         link = _relative_link(ctx.source_repo_path, target)
         _, marker, fragment = href.partition("#")

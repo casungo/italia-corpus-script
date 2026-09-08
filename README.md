@@ -21,10 +21,12 @@ del singolo atto e la accetta solo dopo la normale validazione.
 
 Gli atti fondamentali segnalati nelle issue #2 e #3 hanno gate dedicati. Se DPR 380/2001, DPR 151/2011
 o D.Lgs. 152/2006 non arrivano dalle collezioni, vengono acquisiti dal testo vigente Normattiva.
-Stesso trattamento per Costituzione (`047U0001`), legge 400/1988 e legge 241/1990, i target di
-riferimento più ricorrenti fuori collezione. Le NTC 2018 (`18A00716`) vengono estratte dal PDF
-ufficiale della Gazzetta e marcate come testo originario, non consolidato con il decreto
-modificativo del 2023.
+Stesso trattamento per legge 400/1988 e legge 241/1990, tra i target di riferimento più ricorrenti
+fuori collezione. I riferimenti alla Costituzione si risolvono tramite alias (`refs.URN_ALIASES`)
+verso l'atto già in collezione (`Leggi costituzionali`, `atti/047U0001.md`), catalogato da
+Normattiva con URN canonico diverso dalla forma citata negli atti. Le NTC 2018 (`18A00716`)
+vengono estratte dal PDF ufficiale della Gazzetta e marcate come testo originario, non consolidato
+con il decreto modificativo del 2023.
 
 ## Formato
 
