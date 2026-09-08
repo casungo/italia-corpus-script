@@ -12,6 +12,7 @@ from pathlib import Path
 import requests
 
 from .akn import AKN_NS, ELI_NS
+from .config import logger
 
 NORMATTIVA = "https://www.normattiva.it"
 GAZZETTA_PDF = "https://www.gazzettaufficiale.it/eli/gu/2018/02/20/42/so/8/sg/pdf"
@@ -165,6 +166,8 @@ def fetch_missing_sources(
     for source in missing:
         code = source["code"]
         root = _fetch_ntc() if code == "18A00716" else _fetch_normattiva(source)
+        articles = sum(1 for _ in root.iter() if _.tag.endswith("}article"))
+        logger.info("Supplemental %s: %d articles fetched", code, articles)
         target = originale if code == "18A00716" else vigente
         ET.ElementTree(root).write(target / f"{code}.xml", encoding="utf-8", xml_declaration=True)
     output = []

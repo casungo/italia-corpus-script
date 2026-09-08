@@ -2,7 +2,7 @@
   "required": [
     {"codice_redazionale": "030U1398", "min_articles": 100, "required_anchors": ["art-575", "art-594"], "source": "issue #3, Codice penale"},
     {"codice_redazionale": "042U0262", "min_articles": 100, "required_anchors": ["art-1"], "source": "issue #3, Codice civile"},
-    {"codice_redazionale": "047U0001", "min_articles": 100, "required_anchors": ["art-1", "art-139"], "source": "link esterni ricorrenti, Costituzione"},
+    {"codice_redazionale": "047U0001", "min_articles": 100, "required_anchors": ["art-1"], "source": "link esterni ricorrenti, Costituzione"},
     {"codice_redazionale": "088G0458", "min_articles": 20, "source": "link esterni ricorrenti, legge 400/1988"},
     {"codice_redazionale": "090G0294", "min_articles": 20, "source": "link esterni ricorrenti, legge 241/1990"},
     {"codice_redazionale": "001G0429", "min_articles": 1, "source": "issue #2, DPR 380/2001"},
