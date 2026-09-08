@@ -52,6 +52,7 @@ NORMATTIVA_AKN_URL = "https://www.normattiva.it/do/atto/caricaAKN"
 _MEMBER_ID = re.compile(r"^(\d{4}-\d{2}-\d{2})_([0-9A-Z]+)_")
 SMOKE_XML_PER_COLLECTION = 1_000
 CACHE_INVENTORY = "inventory.json"
+FINGERPRINTS_FILE = "fingerprints.json"
 DISCOVERY_CACHE_VERSION = 2
 MAX_RELEASE_ASSET_BYTES = 2 * 1024 * 1024 * 1024 - 1
 DISCOVERY_WORKERS = min(8, max(1, (os.cpu_count() or 1) * 2))
@@ -278,6 +279,51 @@ def _discovery_cache_path(cache_root: Path, collection: dict) -> Path:
     )
 
 
+def _load_fingerprints(cache_root: Path) -> dict:
+    path = cache_root / FINGERPRINTS_FILE
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if value.get("schema_version") == 1 and isinstance(value.get("collections"), dict):
+            return value
+    except (OSError, ValueError, AttributeError):
+        pass
+    return {"schema_version": 1, "collections": {}}
+
+
+def _collection_fingerprint(collection: dict) -> dict:
+    """Probe the download endpoint with a one-byte range instead of pulling the package."""
+    params = collection_download_params(collection)
+    response = requests.get(
+        ENDPOINT_URL, params=params, headers=HEADERS | {"Range": "bytes=0-0"},
+        timeout=DOWNLOAD_TIMEOUT,
+    )
+    response.raise_for_status()
+    total = response.headers.get("Content-Range", "").rpartition("/")[2]
+    return {
+        "format": params["formatoRichiesta"],
+        "numero_atti": int(collection.get("numeroAtti") or 0),
+        "etag": response.headers.get("ETag") or response.headers.get("X-ETag") or "",
+        "length": int(total) if total.isdigit() else 0,
+    }
+
+
+def store_upstream_fingerprints(cache_root: Path, collections: list[dict]) -> None:
+    """Record the upstream packages a successful snapshot was built from."""
+    fingerprints_by_name: dict[str, dict] = {}
+    for collection in collections:
+        params = collection_download_params(collection)
+        fingerprints_by_name[params["nome"]] = _collection_fingerprint(collection)
+    fingerprints = {"schema_version": 1, "collections": fingerprints_by_name}
+    path = cache_root / FINGERPRINTS_FILE
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(fingerprints, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+    logger.info("Stored upstream fingerprints for %d collections", len(fingerprints_by_name))
+
+
 def upstream_collections_are_cached(cache_root: Path) -> bool:
     """Return false when upstream metadata needs a full, validated snapshot."""
     collections = merge_collections_by_name(fetch_predefined_collections())
@@ -289,6 +335,16 @@ def upstream_collections_are_cached(cache_root: Path) -> bool:
     if missing:
         logger.info("Upstream check requires a full snapshot: %s", ", ".join(missing))
         return False
+    stored = _load_fingerprints(cache_root)["collections"]
+    for collection in collections:
+        params = collection_download_params(collection)
+        fingerprint = _collection_fingerprint(collection)
+        if stored.get(params["nome"]) != fingerprint:
+            logger.info(
+                "Upstream check: %s changed (stored %s, current %s)",
+                params["nome"], stored.get(params["nome"]), fingerprint,
+            )
+            return False
     logger.info("Upstream check: %d collections unchanged", len(collections))
     return True
 
@@ -848,5 +904,6 @@ def extract_and_push(
             active_archives,
             {_discovery_cache_path(cache_root, collection).name for collection in collections},
         )
+        store_upstream_fingerprints(cache_root, collections)
         logger.info("Published %s acts from %s XML files", report.converted, report.xml_received)
         return root

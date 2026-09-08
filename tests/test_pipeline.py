@@ -708,12 +708,16 @@ def test_upstream_check_requires_a_checkpoint_for_each_current_collection(
         "nomeCollezione": "Codici", "formatoCollezione": "V", "dataCreazione": "2026-08-28",
     }
     monkeypatch.setattr(pipeline, "fetch_predefined_collections", lambda: [collection])
+    monkeypatch.setattr(pipeline, "_collection_fingerprint", _fake_probe("etag-1", 123))
 
     assert not pipeline.upstream_collections_are_cached(tmp_path)
     checkpoint = pipeline._discovery_cache_path(tmp_path, collection)
     checkpoint.parent.mkdir(parents=True)
     checkpoint.touch()
 
+    # senza fingerprint registrati il check resta conservativo: serve un run che li registri
+    assert not pipeline.upstream_collections_are_cached(tmp_path)
+    pipeline.store_upstream_fingerprints(tmp_path, [collection])
     assert pipeline.upstream_collections_are_cached(tmp_path)
 
 
@@ -996,3 +1000,50 @@ def test_parallel_render_matches_serial(tmp_path: Path, monkeypatch) -> None:
     for serial_file in (tmp_path / "serial").rglob("*.md"):
         parallel_file = tmp_path / "parallel" / serial_file.relative_to(tmp_path / "serial")
         assert parallel_file.read_bytes() == serial_file.read_bytes()
+
+
+def _prepare_upstream(tmp_path: Path, numero_atti: int) -> list[dict]:
+    collections = [{
+        "nomeCollezione": "Bench", "formatoCollezione": "V",
+        "dataCreazione": "2026-09-08", "numeroAtti": numero_atti,
+    }]
+    discovery = pipeline._discovery_cache_path(tmp_path, collections[0])
+    discovery.parent.mkdir(parents=True, exist_ok=True)
+    discovery.touch()
+    return collections
+
+
+def _fake_probe(etag: str, length: int):
+    def probe(collection: dict) -> dict:
+        return {
+            "format": "V", "numero_atti": collection.get("numeroAtti", 0),
+            "etag": etag, "length": length,
+        }
+    return probe
+
+
+def test_upstream_check_skips_when_fingerprints_match(tmp_path: Path, monkeypatch) -> None:
+    collections = _prepare_upstream(tmp_path, 2921)
+    monkeypatch.setattr(pipeline, "fetch_predefined_collections", lambda: collections)
+    monkeypatch.setattr(pipeline, "_collection_fingerprint", _fake_probe("etag-1", 72637059))
+    pipeline.store_upstream_fingerprints(tmp_path, collections)
+    monkeypatch.setattr(pipeline, "_collection_fingerprint", _fake_probe("etag-1", 72637059))
+    assert pipeline.upstream_collections_are_cached(tmp_path) is True
+
+
+def test_upstream_check_detects_changed_package(tmp_path: Path, monkeypatch) -> None:
+    collections = _prepare_upstream(tmp_path, 2921)
+    monkeypatch.setattr(pipeline, "fetch_predefined_collections", lambda: collections)
+    monkeypatch.setattr(pipeline, "_collection_fingerprint", _fake_probe("etag-1", 72637059))
+    pipeline.store_upstream_fingerprints(tmp_path, collections)
+
+    changed = [
+        _fake_probe("etag-2", 72637059),
+        _fake_probe("etag-1", 72637100),
+        _fake_probe("etag-1", 72637059),
+    ]
+    for index, probe in enumerate(changed):
+        if index == 2:
+            collections[0]["numeroAtti"] = 2922
+        monkeypatch.setattr(pipeline, "_collection_fingerprint", probe)
+        assert pipeline.upstream_collections_are_cached(tmp_path) is False
