@@ -1086,3 +1086,16 @@ def test_date_number_alias_skips_ambiguous_tails(tmp_path: Path) -> None:
     }
     converter._add_date_number_aliases(urn_index)
     assert "urn:nir:alias:1950-05-12;1" not in urn_index
+
+
+def test_date_number_alias_covers_year_only_forms_when_unambiguous() -> None:
+    urn_index = {"urn:nir:stato:legge:1988-08-23;400": "atti/088G0458.md"}
+    converter._add_date_number_aliases(urn_index)
+    assert urn_index["urn:nir:alias:1988;400"] == "atti/088G0458.md"
+
+    ambiguous = {
+        "urn:nir:stato:legge:1988-08-23;400": "atti/088G0458.md",
+        "urn:nir:stato:decreto:1988-12-31;400": "atti/088U0400.md",
+    }
+    converter._add_date_number_aliases(ambiguous)
+    assert "urn:nir:alias:1988;400" not in ambiguous

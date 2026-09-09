@@ -314,6 +314,18 @@ def _add_date_number_aliases(urn_index: dict[str, str]) -> None:
             continue
         alias = f"{URN_ALIAS_PREFIX}{tail}"
         urn_index.setdefault(alias, next(iter(paths)))
+    # forme con sola annata (es. legge:1988;400 per legge:1988-08-23;400), se non ambigue
+    coarse: dict[str, set[str]] = {}
+    for tail, paths in tails.items():
+        if len(paths) != 1 or "-" not in tail:
+            continue
+        year, number = tail.split(";", 1)
+        coarse.setdefault(f"{year.split('-')[0]};{number}", set()).update(paths)
+    for tail, paths in coarse.items():
+        if len(paths) != 1:
+            continue
+        alias = f"{URN_ALIAS_PREFIX}{tail}"
+        urn_index.setdefault(alias, next(iter(paths)))
 
 
 def render_candidates(
