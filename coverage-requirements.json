@@ -2,8 +2,13 @@
   "required": [
     {"codice_redazionale": "030U1398", "min_articles": 100, "required_anchors": ["art-575", "art-594"], "source": "issue #3, Codice penale"},
     {"codice_redazionale": "042U0262", "min_articles": 100, "required_anchors": ["art-1"], "source": "issue #3, Codice civile"},
+    {"codice_redazionale": "031U0889", "min_articles": 25, "source": "link esterni ricorrenti, legge 889/1931"},
+    {"codice_redazionale": "035U1071", "min_articles": 10, "source": "link esterni ricorrenti, r.d.l. 1071/1935"},
+    {"codice_redazionale": "062U1643", "min_articles": 8, "source": "link esterni ricorrenti, legge 1643/1962 (ENEL)"},
+    {"codice_redazionale": "081U0689", "min_articles": 60, "source": "link esterni ricorrenti, legge 689/1981"},
     {"codice_redazionale": "088G0458", "min_articles": 20, "source": "link esterni ricorrenti, legge 400/1988"},
     {"codice_redazionale": "090G0294", "min_articles": 20, "source": "link esterni ricorrenti, legge 241/1990"},
+    {"codice_redazionale": "009G0201", "min_articles": 30, "source": "link esterni ricorrenti, legge 196/2009"},
     {"codice_redazionale": "001G0429", "min_articles": 1, "source": "issue #2, DPR 380/2001"},
     {"codice_redazionale": "011G0193", "min_articles": 1, "source": "issue #2, DPR 151/2011"},
     {"codice_redazionale": "006G0171", "min_articles": 1, "source": "issue #2, D.Lgs. 152/2006"},

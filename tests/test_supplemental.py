@@ -24,9 +24,18 @@ def test_recurring_external_targets_are_supplemental_sources() -> None:
     from italia_corpus.supplemental import SOURCES
 
     by_code = {source["code"]: source for source in SOURCES}
-    assert by_code["088G0458"]["urn"] == "urn:nir:stato:legge:1988-08-23;400"
-    assert by_code["090G0294"]["urn"] == "urn:nir:stato:legge:1990-08-07;241"
-    # la Costituzione NON è copribile: il suo codice Normattiva (047U0001) collide con la
-    # legge cost. 1/1947 già in collezione, e la collisione sposterebbe entrambi gli atti
+    # i target esterni piu' ricorrenti fuori collezione (censimento sui render del corpus)
+    for code, urn in {
+        "088G0458": "urn:nir:stato:legge:1988-08-23;400",
+        "090G0294": "urn:nir:stato:legge:1990-08-07;241",
+        "031U0889": "urn:nir:stato:legge:1931-06-15;889",
+        "035U1071": "urn:nir:stato:regio.decreto.legge:1935-06-20;1071",
+        "062U1643": "urn:nir:stato:legge:1962-12-06;1643",
+        "081U0689": "urn:nir:stato:legge:1981-11-24;689",
+        "009G0201": "urn:nir:stato:legge:2009-12-31;196",
+    }.items():
+        assert by_code[code]["urn"] == urn
+    # la Costituzione NON e' copribile: il suo codice Normattiva (047U0001) collide con la
+    # legge cost. 1/1947 gia' in collezione, e la collisione sposterebbe entrambi gli atti
     # su path suffissati (gate: previous document disappeared). Reste esterna per design.
     assert "047U0001" not in by_code
