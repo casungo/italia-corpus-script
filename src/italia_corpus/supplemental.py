@@ -156,12 +156,18 @@ def fetch_missing_sources(
     ]
     if article_counts.get("18A00716", 0) < 1:
         missing.append({"code": "18A00716"})
-    if not missing:
-        return []
     vigente = destination / "vigente"
     originale = destination / "originale"
     vigente.mkdir(parents=True, exist_ok=True)
     originale.mkdir(parents=True, exist_ok=True)
+    expected = {f"{source['code']}.xml" for source in SOURCES} | {"18A00716.xml"}
+    for directory in (vigente, originale):
+        for stale in directory.glob("*.xml"):
+            if stale.name not in expected:
+                stale.unlink()
+                logger.info("Removed stale supplemental %s", stale.name)
+    if not missing:
+        return []
     for source in missing:
         code = source["code"]
         root = _fetch_ntc() if code == "18A00716" else _fetch_normattiva(source)
