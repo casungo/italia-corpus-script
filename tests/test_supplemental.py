@@ -26,21 +26,7 @@ def test_recurring_external_targets_are_supplemental_sources() -> None:
     by_code = {source["code"]: source for source in SOURCES}
     assert by_code["088G0458"]["urn"] == "urn:nir:stato:legge:1988-08-23;400"
     assert by_code["090G0294"]["urn"] == "urn:nir:stato:legge:1990-08-07;241"
-    # la Costituzione NON è un supplemento: è già in collezione come legge cost. 1/1947
-    # e l'alias verso il suo URN canonico lo gestisce refs.URN_ALIASES
+    # la Costituzione NON è copribile: il suo codice Normattiva (047U0001) collide con la
+    # legge cost. 1/1947 già in collezione, e la collisione sposterebbe entrambi gli atti
+    # su path suffissati (gate: previous document disappeared). Reste esterna per design.
     assert "047U0001" not in by_code
-
-
-def test_costituzione_alias_resolves_to_canonical_corpus_urn() -> None:
-    from italia_corpus.refs import RefContext, resolve_ref
-
-    ctx = RefContext(
-        urn_index={"urn:nir:stato:legge.costituzionale:1947-02-21;1": "atti/047U0001.md"},
-        source_repo_path="atti/017G00210.md",
-    )
-    rendered, kind = resolve_ref(
-        "urn:nir:stato:costituzione:1947-12-27;const#art_87",
-        "Costituzione, art. 87", ctx, with_kind=True,
-    )
-    assert kind == "internal"
-    assert rendered == "[Costituzione, art. 87](047U0001.md#art-87)"
