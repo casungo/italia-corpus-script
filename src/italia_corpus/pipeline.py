@@ -857,6 +857,14 @@ def extract_and_push(
         report.duplicates = duplicates
         snapshot = root / "snapshot"
         render_candidates(canonical, snapshot, report, cache_root)
+        for probe_code in ("047U0001",):
+            probe = [c for c in canonical if c.metadata.codice_redazionale == probe_code]
+            logger.info(
+                "Coverage probe %s: canonical=%d urn=%s rendered=%s",
+                probe_code, len(probe),
+                probe[0].metadata.urn if probe else "-",
+                f"atti/{probe_code}.md" in report.hashes if probe else False,
+            )
         requirements = Path(__file__).parents[2] / "coverage-requirements.json"
         # prima la coerenza del report: un render error reale non deve essere sepolto dal gate di copertura
         validate_report(report, previous, Path(__file__).parents[2] / "quality-exceptions.json")
