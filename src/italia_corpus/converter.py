@@ -300,6 +300,22 @@ def _render_archive_member(candidate: Candidate) -> _RenderOutcome:
 RENDER_POOL_MIN_MEMBERS = 512
 
 
+def _add_date_number_aliases(urn_index: dict[str, str]) -> None:
+    """Register the invariant date;number tail of every act so alias URN forms resolve."""
+    from .refs import URN_ALIAS_PREFIX
+
+    tails: dict[str, set[str]] = {}
+    for urn, path in urn_index.items():
+        tail = urn.rsplit(":", 1)[-1]
+        if ";" in tail:
+            tails.setdefault(tail, set()).add(path)
+    for tail, paths in tails.items():
+        if len(paths) != 1:
+            continue
+        alias = f"{URN_ALIAS_PREFIX}{tail}"
+        urn_index.setdefault(alias, next(iter(paths)))
+
+
 def render_candidates(
     candidates: list[Candidate],
     output: Path,
@@ -307,6 +323,7 @@ def render_candidates(
     archive_root: Path | None = None,
 ) -> dict[str, str]:
     urn_index = {candidate.metadata.urn or "": candidate.repo_path for candidate in candidates}
+    _add_date_number_aliases(urn_index)
     output.mkdir(parents=True, exist_ok=True)
 
     def render(candidate: Candidate, content: str) -> None:
@@ -326,7 +343,9 @@ def render_candidates(
         else:
             render(candidate, _read_xml(candidate.xml_path))
 
-    render_workers = min(8, max(1, (os.cpu_count() or 1) * 2))
+    # ogni worker riceve in initializer l'urn_index completo: oltre cpu_count e' solo
+    # memoria in piu' (su host piccoli il pool arriva a BrokenProcessPool)
+    render_workers = min(8, max(1, os.cpu_count() or 1))
     for archive_name, grouped in sorted(archive_candidates.items()):
         if archive_root is None:
             raise RuntimeError(f"archive root is required for {archive_name}")

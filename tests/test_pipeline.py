@@ -1061,3 +1061,28 @@ def test_quality_gate_tolerates_external_growth_only_with_internal_growth() -> N
     validate_report(report(990, 5000), previous)
     with pytest.raises(QualityGateError, match="internal_links grew by only 10"):
         validate_report(report(1050, 5010), previous)
+
+
+def test_date_number_alias_resolves_friendly_ref_forms(tmp_path: Path) -> None:
+    canonical = "urn:nir:stato:regio.decreto:1942-03-16;262"
+    urn_index = {canonical: "atti/042U0262.md"}
+    converter._add_date_number_aliases(urn_index)
+    assert urn_index["urn:nir:alias:1942-03-16;262"] == "atti/042U0262.md"
+
+    from italia_corpus.refs import RefContext, resolve_ref
+
+    ctx = RefContext(urn_index=urn_index, source_repo_path="atti/030U1398.md")
+    rendered, kind = resolve_ref(
+        "urn:nir:stato:codice.civile:1942-03-16;262#art_1", "Codice civile", ctx, with_kind=True,
+    )
+    assert kind == "internal"
+    assert rendered == "[Codice civile](042U0262.md#art-1)"
+
+
+def test_date_number_alias_skips_ambiguous_tails(tmp_path: Path) -> None:
+    urn_index = {
+        "urn:nir:stato:legge:1950-05-12;1": "atti/050U0001.md",
+        "urn:nir:stato:decreto:1950-05-12;1": "atti/050U0001-abc123def456.md",
+    }
+    converter._add_date_number_aliases(urn_index)
+    assert "urn:nir:alias:1950-05-12;1" not in urn_index

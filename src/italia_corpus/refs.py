@@ -9,6 +9,12 @@ from typing import Literal, overload
 
 NORMATTIVA_URI_RES = "https://www.normattiva.it/uri-res/N2Ls"
 
+# Risoluzione di forme alias: gli atti citano URN con tipi "amichevoli" o segmenti mancanti
+# (es. codice.civile:1942-03-16;262 per l'atto catalogato come regio.decreto:1942-03-16;262).
+# La parte invariante di ogni forma e' la coda "data;numero": render_candidates registra le
+# code del corpus sotto questo prefisso e resolve_ref ci ripiega quando l'URN esatto manca.
+URN_ALIAS_PREFIX = "urn:nir:alias:"
+
 _HREF_ENCODE: dict[str, str] = {
     " ": "%20",
     "(": "%28",
@@ -98,6 +104,9 @@ def resolve_ref(
     urn, _, fragment = href.partition("#")
     lookup_urn = href_to_urn(href) or urn
     target = ctx.urn_index.get(lookup_urn)
+    if not target:
+        tail = lookup_urn.rsplit(":", 1)[-1]
+        target = ctx.urn_index.get(f"{URN_ALIAS_PREFIX}{tail}")
     if target:
         link = _relative_link(ctx.source_repo_path, target)
         _, marker, fragment = href.partition("#")
