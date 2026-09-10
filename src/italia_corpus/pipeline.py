@@ -603,6 +603,81 @@ def _stage_release(repo, tag: str, artifacts: list[Path]):
         raise
 
 
+def _detect_collection_fallbacks(
+    candidates_by_urn: dict[str, Candidate], previous: dict | None
+) -> tuple[list[str], dict[str, int]]:
+    """Collections whose distinct-URN coverage regressed vs the published snapshot."""
+    per_collection: dict[str, int] = {}
+    for candidate in candidates_by_urn.values():
+        per_collection[candidate.collection] = per_collection.get(candidate.collection, 0) + 1
+    if not previous:
+        return [], per_collection
+    fallbacks = []
+    for collection, counts in previous.get("by_collection", {}).items():
+        prior = int(counts.get("converted", 0))
+        if prior > 0 and per_collection.get(collection, 0) < prior:
+            fallbacks.append(collection)
+    return sorted(fallbacks), per_collection
+
+
+def _carry_previous_collection(
+    source_dir: Path,
+    collection: str,
+    snapshot: Path,
+    report: ConversionReport,
+    previous: dict,
+    carried_index: dict[str, str],
+    memberships: dict[str, set[str]],
+) -> dict:
+    """Freeze a regressed collection at its published content and account for it in the report."""
+    slug = "-".join(collection.casefold().split())
+    membership = json.loads(
+        (source_dir / "collections" / f"{slug}.json").read_text(encoding="utf-8")
+    )["urns"]
+    documents = json.loads(
+        (source_dir / "urn-index.json").read_text(encoding="utf-8")
+    )["documents"]
+    carried = {"collection": collection, "acts": 0, "internal_links": 0, "external_links": 0}
+    carried_internal = 0
+    carried_external = 0
+    carried_acts = 0
+    for urn in membership:
+        entry = documents.get(urn)
+        if not entry:
+            continue
+        path = entry["path"]
+        source = source_dir / path
+        if not source.is_file():
+            continue
+        markdown = source.read_text(encoding="utf-8")
+        target = snapshot / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(markdown, encoding="utf-8", newline="\n")
+        anchors = re.findall(r'<a id="([^"]+)"', markdown)
+        internal = len(re.findall(r"\]\((?!https://www\.normattiva\.it)[^)]+\)", markdown))
+        external = len(re.findall(r"\]\(https://www\.normattiva\.it[^)]*\)", markdown))
+        report.hashes[path] = hashlib.sha256(markdown.encode()).hexdigest()
+        report.document_anchors[path] = anchors
+        report.document_articles[path] = len([a for a in anchors if a.startswith("art-")])
+        report.internal_links += internal
+        report.external_links += external
+        carried_internal += internal
+        carried_external += external
+        report.converted += 1
+        report.urns += 1
+        report.editorial_codes += 1
+        carried_index[urn] = path
+        memberships.setdefault(collection, set()).add(urn)
+        carried_acts += 1
+    carried.update(acts=carried_acts, internal_links=carried_internal, external_links=carried_external)
+    previous_counts = previous.get("by_collection", {}).get(collection, {})
+    current_counts = dict(report.collections.get(collection, {}))
+    current_counts["converted"] = int(previous_counts.get("converted", carried_acts))
+    current_counts["articles"] = int(previous_counts.get("articles", 0))
+    report.collections[collection] = current_counts
+    return carried
+
+
 def extract_and_push(
     root_path: str,
     gh: Github | None,
@@ -852,11 +927,33 @@ def extract_and_push(
             else fetch_missing_sources(article_counts, cache_root / "supplemental")
         )
         retain(discover_candidates(supplemental, report))
+        carried_index: dict[str, str] = {}
+        fallbacks: list[dict] = []
+        fallback_collections: list[str] = []
+        per_collection_urns: dict[str, int] = {}
+        if previous is not None:
+            fallback_collections, per_collection_urns = _detect_collection_fallbacks(
+                candidates_by_urn, previous
+            )
+            for name in fallback_collections:
+                for urn in [u for u, c in candidates_by_urn.items() if c.collection == name]:
+                    del candidates_by_urn[urn]
+                info = _carry_previous_collection(
+                    baseline or clone, name, root / "snapshot", report, previous,
+                    carried_index, memberships,
+                )
+                fallbacks.append(info)
+                logger.error(
+                    "FALLBACK %s: the new edition covers %d acts vs %d published; carried the "
+                    "published content into the snapshot and marked it in the manifest",
+                    name, per_collection_urns.get(name, 0),
+                    int(previous.get("by_collection", {}).get(name, {}).get("converted", 0)),
+                )
         duplicates = report.duplicates
         canonical = select_canonical(list(candidates_by_urn.values()), report)
         report.duplicates = duplicates
         snapshot = root / "snapshot"
-        render_candidates(canonical, snapshot, report, cache_root)
+        render_candidates(canonical, snapshot, report, cache_root, carried_index=carried_index)
         requirements = Path(__file__).parents[2] / "coverage-requirements.json"
         # prima la coerenza del report: un render error reale non deve essere sepolto dal gate di copertura
         validate_report(report, previous, Path(__file__).parents[2] / "quality-exceptions.json")
@@ -869,6 +966,7 @@ def extract_and_push(
             collections_downloaded + len(supplemental),
             known_gaps,
             memberships,
+            fallbacks,
         )
         write_delta(previous, manifest, snapshot)
         artifacts = build_artifacts(snapshot, root / "artifacts")

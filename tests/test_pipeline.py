@@ -1099,3 +1099,76 @@ def test_date_number_alias_covers_year_only_forms_when_unambiguous() -> None:
     }
     converter._add_date_number_aliases(ambiguous)
     assert "urn:nir:alias:1988;400" not in ambiguous
+
+
+def _previous_snapshot_fixture(tmp_path: Path) -> tuple[Path, dict]:
+    source_dir = tmp_path / "previous"
+    (source_dir / "collections").mkdir(parents=True)
+    (source_dir / "atti").mkdir()
+    urns = ["urn:a", "urn:b"]
+    (source_dir / "collections" / "bench.json").write_text(json.dumps(
+        {"schema_version": SCHEMA_VERSION, "name": "Bench", "urns": urns}), encoding="utf-8")
+    documents = {
+        "urn:a": {"path": "atti/a.md", "codice_redazionale": "001A0001"},
+        "urn:b": {"path": "atti/b.md", "codice_redazionale": "002B0002"},
+    }
+    (source_dir / "urn-index.json").write_text(json.dumps(
+        {"schema_version": SCHEMA_VERSION, "documents": documents}), encoding="utf-8")
+    for urn, name in (("urn:a", "a"), ("urn:b", "b")):
+        (source_dir / "atti" / f"{name}.md").write_text(
+            '<a id="art-1" data-akn-name="article"></a>\n## Art. 1.\n'
+            "[rif](042U0262.md#art-1) e [fuori](https://www.normattiva.it/uri-res/N2Ls?urn:x)\n",
+            encoding="utf-8",
+        )
+    previous = {
+        "by_collection": {"Bench": {"converted": 2, "articles": 2, "xml_received": 6}},
+        "files": {"atti/a.md": "0" * 64, "atti/b.md": "1" * 64},
+    }
+    return source_dir, previous
+
+
+def test_fallback_detection_and_carry(tmp_path: Path, monkeypatch) -> None:
+    source_dir, previous = _previous_snapshot_fixture(tmp_path)
+    candidate_a = replace(
+        discover_candidate(
+            "Bench", "V", "bench/a.xml",
+            (FIXTURES / "codice_penale.xml").read_bytes(), ConversionReport(),
+        ),
+        collection="Bench", metadata=replace(
+            discover_candidate(
+                "Bench", "V", "bench/a.xml",
+                (FIXTURES / "codice_penale.xml").read_bytes(), ConversionReport(),
+            ).metadata, urn="urn:a", codice_redazionale="001A0001",
+        ),
+    )
+    candidates_by_urn = {"urn:a": candidate_a}
+
+    fallbacks, per_collection = pipeline._detect_collection_fallbacks(
+        candidates_by_urn, previous
+    )
+    assert fallbacks == ["Bench"] and per_collection == {"Bench": 1}
+
+    report = ConversionReport()
+    snapshot = tmp_path / "snapshot"
+    carried_index: dict[str, str] = {}
+    memberships: dict[str, set[str]] = {}
+    info = pipeline._carry_previous_collection(
+        source_dir, "Bench", snapshot, report, previous, carried_index, memberships
+    )
+    assert info["acts"] == 2
+    assert (snapshot / "atti" / "a.md").is_file()
+    assert (snapshot / "atti" / "b.md").is_file()
+    assert report.hashes["atti/a.md"] and report.hashes["atti/b.md"]
+    assert report.document_articles["atti/a.md"] == 1
+    assert carried_index == {"urn:a": "atti/a.md", "urn:b": "atti/b.md"}
+    assert memberships == {"Bench": {"urn:a", "urn:b"}}
+    assert report.internal_links == 2 and report.external_links == 2
+    assert report.collections["Bench"]["converted"] == 2
+
+
+def test_write_indexes_records_fallbacks(tmp_path: Path) -> None:
+    report = ConversionReport()
+    manifest = write_indexes(tmp_path, [], report, 1, 1, fallbacks=[
+        {"collection": "Bench", "acts": 1}
+    ])
+    assert manifest["fallbacks"] == [{"collection": "Bench", "acts": 1}]

@@ -185,7 +185,8 @@ def validate_required_coverage(report: ConversionReport, requirements_path: Path
 def write_indexes(output: Path, candidates: list[Candidate], report: ConversionReport,
                   collections_requested: int, collections_downloaded: int,
                   known_gaps: list[str] | None = None,
-                  memberships: dict[str, set[str]] | None = None) -> dict:
+                  memberships: dict[str, set[str]] | None = None,
+                  fallbacks: list[dict] | None = None) -> dict:
     memberships = memberships or {}
     type_counts: Counter[str] = Counter()
     year_counts: Counter[str] = Counter()
@@ -223,6 +224,7 @@ def write_indexes(output: Path, candidates: list[Candidate], report: ConversionR
         "coverage_date": date.today().isoformat(),
         "source_format": "AKN",
         "collections": {"requested": collections_requested, "downloaded": collections_downloaded},
+        "fallbacks": fallbacks or [],
         "counts": {
             "xml_received": report.xml_received, "acts": report.converted,
             "articles": report.articles, "skipped": report.skipped,

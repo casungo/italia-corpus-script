@@ -333,8 +333,10 @@ def render_candidates(
     output: Path,
     report: ConversionReport,
     archive_root: Path | None = None,
+    carried_index: dict[str, str] | None = None,
 ) -> dict[str, str]:
     urn_index = {candidate.metadata.urn or "": candidate.repo_path for candidate in candidates}
+    urn_index.update(carried_index or {})
     _add_date_number_aliases(urn_index)
     output.mkdir(parents=True, exist_ok=True)
 
