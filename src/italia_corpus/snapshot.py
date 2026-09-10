@@ -144,8 +144,22 @@ def validate_report(report: ConversionReport, previous: dict | None = None,
                 f"external_links increased from {prior_external} to {report.external_links} "
                 f"while internal_links grew by only {internal_growth}"
             )
+        rendered_codes = {
+            re.sub(r"-[0-9a-f]{12}$", "", path[5:-3])
+            for path in report.hashes
+            if path.startswith("atti/") and path.endswith(".md")
+        }
         for path, digest in previous.get("files", {}).items():
-            if path not in report.hashes and not _is_allowed(allowed, "removed_files", "*", 1):
+            if path in report.hashes:
+                continue
+            # un atto puo' rinormalizzarsi tra suffisso e path base quando una collisione
+            # di codice si risolve: conta la presenza del codice, non il path esatto
+            code = re.sub(r"-[0-9a-f]{12}$", "", path[5:-3]) if (
+                path.startswith("atti/") and path.endswith(".md")
+            ) else path
+            if code in rendered_codes:
+                continue
+            if not _is_allowed(allowed, "removed_files", "*", 1):
                 failures.append(f"previous document disappeared: {path} ({digest[:12]})")
         for collection, counts in previous.get("by_collection", {}).items():
             current = report.collections.get(collection, {})

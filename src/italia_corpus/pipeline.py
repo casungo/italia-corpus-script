@@ -675,6 +675,9 @@ def _carry_previous_collection(
     current_counts["converted"] = int(previous_counts.get("converted", carried_acts))
     current_counts["articles"] = int(previous_counts.get("articles", 0))
     report.collections[collection] = current_counts
+    # il contenuto carried e' identico a quello pubblicato: il totale articoli della
+    # collezione si ripristina verbatim dal manifest precedente
+    report.articles += int(previous_counts.get("articles", 0))
     return carried
 
 
