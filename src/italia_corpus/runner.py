@@ -19,6 +19,33 @@ DEFAULT_LAST_FULL_RUN_FILE = "/data/last-full-run"
 DEFAULT_HEARTBEAT_FILE = "/data/.heartbeat"
 
 
+def _seconds_until(anchor: str, now: float | None = None) -> int:
+    """Seconds until the next occurrence of the wall-clock time ``anchor`` (HH:MM).
+
+    Local time of the container. Raises SystemExit on a malformed anchor so a
+    typo cannot silently disable the schedule.
+    """
+    parts = anchor.strip().split(":")
+    if len(parts) != 2 or not all(p.isascii() and p.isdigit() and len(p) == 2 for p in parts):
+        raise SystemExit(f"RUN_AT must be HH:MM (24h), got {anchor!r}")
+    hour, minute = int(parts[0]), int(parts[1])
+    if hour > 23 or minute > 59:
+        raise SystemExit(f"RUN_AT must be HH:MM (24h), got {anchor!r}")
+    current = time.localtime(now)
+    target = time.struct_time(
+        (current.tm_year, current.tm_mon, current.tm_mday, hour, minute, 0,
+         current.tm_wday, current.tm_yday, current.tm_isdst)
+    )
+    delay = time.mktime(target) - (now if now is not None else time.time())
+    if delay <= 0:
+        target = time.struct_time(
+            (current.tm_year, current.tm_mon, current.tm_mday + 1, hour, minute, 0,
+             current.tm_wday, current.tm_yday, current.tm_isdst)
+        )
+        delay = time.mktime(target) - (now if now is not None else time.time())
+    return max(int(delay), 0)
+
+
 def _read_last_full_run(path: Path) -> int:
     try:
         value = int(path.read_text(encoding="ascii").strip())
@@ -101,16 +128,25 @@ def run_loop(root_path: str, download_cache: Path) -> None:
         os.getenv("RUN_INTERVAL_SECONDS", "").strip() or str(DEFAULT_FULL_RUN_INTERVAL_SECONDS),
     )
     retry_delay = _seconds("RETRY_DELAY_SECONDS", str(DEFAULT_RETRY_DELAY_SECONDS))
+    run_at = os.getenv("RUN_AT", "").strip()
+    if run_at:
+        # Fail fast on a malformed anchor before the first cycle starts.
+        _seconds_until(run_at)
     last_full_run = Path(os.getenv("LAST_FULL_RUN_FILE", DEFAULT_LAST_FULL_RUN_FILE))
     heartbeat = Path(os.getenv("HEARTBEAT_FILE", DEFAULT_HEARTBEAT_FILE))
     Path(root_path).mkdir(parents=True, exist_ok=True)
     download_cache.mkdir(parents=True, exist_ok=True)
+
+    def wake_delay() -> int:
+        """RUN_AT pins wake-ups to a wall-clock time; otherwise sleep the interval."""
+        return _seconds_until(run_at) if run_at else check_interval
+
     while True:
         _touch_heartbeat(heartbeat)
         last = _read_last_full_run(last_full_run)
         fresh_window = last > 0 and int(time.time()) - last < full_run_interval
         if fresh_window and _upstream_fresh(download_cache):
-            time.sleep(check_interval)
+            time.sleep(wake_delay())
             continue
         try:
             run_full_snapshot(root_path, download_cache)
@@ -122,4 +158,4 @@ def run_loop(root_path: str, download_cache: Path) -> None:
             continue
         last_full_run.parent.mkdir(parents=True, exist_ok=True)
         last_full_run.write_text(f"{int(time.time())}\n", encoding="ascii")
-        time.sleep(check_interval)
+        time.sleep(wake_delay())

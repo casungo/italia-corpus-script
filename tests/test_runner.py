@@ -25,6 +25,7 @@ def _configure_git_target(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
     monkeypatch.setenv("HEARTBEAT_FILE", str(tmp_path / "state" / "heartbeat"))
     monkeypatch.delenv("RUN_INTERVAL_SECONDS", raising=False)
     monkeypatch.delenv("FULL_RUN_INTERVAL_SECONDS", raising=False)
+    monkeypatch.delenv("RUN_AT", raising=False)
 
 
 def _interrupt_on_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
@@ -198,4 +199,52 @@ def test_run_loop_rejects_non_numeric_legacy_interval(
     _configure_git_target(monkeypatch, tmp_path)
     monkeypatch.setenv("RUN_INTERVAL_SECONDS", "mensile")
     with pytest.raises(SystemExit, match="FULL_RUN_INTERVAL_SECONDS"):
+        runner.run_loop(str(tmp_path / "work"), tmp_path / "cache")
+
+
+def test_seconds_until_computes_delay_to_next_anchor() -> None:
+    # 2026-09-12 10:00:00 locale → anchor 11:00 è tra 3600 secondi.
+    now = time.mktime((2026, 9, 12, 10, 0, 0, 0, 0, -1))
+    assert runner._seconds_until("11:00", now=now) == 3600
+    # Anchor già passato oggi → domani.
+    now_late = time.mktime((2026, 9, 12, 12, 0, 0, 0, 0, -1))
+    assert 23 * 3600 <= runner._seconds_until("11:00", now=now_late) < 24 * 3600
+    # Anchor uguale a "ora" → domani, mai 0.
+    now_exact = time.mktime((2026, 9, 12, 11, 0, 0, 0, 0, -1))
+    assert 24 * 3600 - 60 <= runner._seconds_until("11:00", now=now_exact) <= 24 * 3600
+
+
+def test_seconds_until_rejects_malformed_anchor() -> None:
+    for bad in ("25:00", "11:60", "1100", "abc:00", "11:5x", ""):
+        with pytest.raises(SystemExit, match="RUN_AT"):
+            runner._seconds_until(bad, now=0.0)
+
+
+def test_run_loop_anchors_sleeps_to_run_at(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _configure_git_target(monkeypatch, tmp_path)
+    monkeypatch.setenv("RUN_AT", "11:00")
+    state = tmp_path / "state" / "last-full-run"
+    state.parent.mkdir(parents=True)
+    state.write_text(f"{int(time.time()) - 60}\n", encoding="ascii")
+    sleeps = _interrupt_on_sleep(monkeypatch)
+    monkeypatch.setattr(runner, "upstream_collections_are_cached", lambda cache: True)
+    calls: list[str] = []
+    monkeypatch.setattr(runner, "run_full_snapshot", lambda root, cache: calls.append(root))
+    with pytest.raises(KeyboardInterrupt):
+        runner.run_loop(str(tmp_path / "work"), tmp_path / "cache")
+    assert calls == []
+    assert len(sleeps) == 1
+    # Il primo sleep arriva al prossimo anchor 11:00: meno di 24h, e non deve
+    # mai essere l'intervallo fisso di 86400.
+    assert 0 < sleeps[0] < 86400
+
+
+def test_run_loop_rejects_malformed_run_at(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _configure_git_target(monkeypatch, tmp_path)
+    monkeypatch.setenv("RUN_AT", "ventitre")
+    with pytest.raises(SystemExit, match="RUN_AT"):
         runner.run_loop(str(tmp_path / "work"), tmp_path / "cache")
