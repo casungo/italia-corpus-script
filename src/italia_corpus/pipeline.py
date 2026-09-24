@@ -655,11 +655,25 @@ def _carry_previous_collection(
     carried_external = 0
     carried_acts = 0
     missing_index_entries = 0
+    frontmatter_map: dict[str, str] | None = None
     for urn in membership:
         entry = documents.get(urn)
         if not entry:
-            missing_index_entries += 1
-            continue
+            # recupero: l'urn-index pubblicato puo' non contenere gli atti carried da un
+            # run precedente; l'urn e' nel frontmatter del markdown gia' pubblicato
+            if frontmatter_map is None:
+                frontmatter_map = {}
+                for md in (source_dir / "atti").rglob("*.md"):
+                    head = md.read_text(encoding="utf-8", errors="replace")[:2000]
+                    m = re.search(r"^urn:\s*(\S+)", head, re.MULTILINE)
+                    if m:
+                        frontmatter_map[m.group(1)] = md.relative_to(source_dir).as_posix()
+            path = frontmatter_map.get(urn)
+            if not path:
+                missing_index_entries += 1
+                continue
+        else:
+            path = entry["path"]
         path = entry["path"]
         source = source_dir / path
         if not source.is_file():
