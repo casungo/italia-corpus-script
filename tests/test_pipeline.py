@@ -1239,3 +1239,18 @@ def test_carry_skips_urns_the_current_render_already_covers(tmp_path: Path, monk
     assert carried_index == {"urn:b": "atti/b.md"}
     assert (snapshot / "atti" / "b.md").is_file()
     assert not (snapshot / "atti" / "a.md").exists()
+
+
+def test_fallback_publish_tolerates_total_regressions_on_carried_content() -> None:
+    def report(external: int, internal: int, converted: int) -> ConversionReport:
+        return ConversionReport(
+            xml_received=1, converted=converted, urns=converted, editorial_codes=converted,
+            external_links=external, internal_links=internal,
+        )
+
+    previous = {"counts": {"acts": 1000, "articles": 5000, "internal_links": 7000, "external_links": 4000}}
+    # senza fallback: la perdita di atti e' fail-closed
+    with pytest.raises(QualityGateError):
+        validate_report(report(3800, 6800, 990), previous)
+    # con fallback attivi: i totali riflettono i contenuti congelati, non una perdita
+    validate_report(report(3800, 6800, 990), previous, fallback_active=True)

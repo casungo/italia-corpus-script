@@ -996,8 +996,10 @@ def extract_and_push(
         snapshot = root / "snapshot"
         render_candidates(canonical, snapshot, report, cache_root, carried_index=carried_index)
         requirements = Path(__file__).parents[2] / "coverage-requirements.json"
-        # prima la coerenza del report: un render error reale non deve essere sepolto dal gate di copertura
-        validate_report(report, previous, Path(__file__).parents[2] / "quality-exceptions.json")
+        # prima la coerenza del report: un render error reale non deve essere sepolto dal gate di copertura.
+        # con fallback attivi i totali riflettono i contenuti congelati, non una perdita
+        validate_report(report, previous, Path(__file__).parents[2] / "quality-exceptions.json",
+                        fallback_active=bool(fallbacks))
         known_gaps = [] if smoke_test else validate_required_coverage(report, requirements)
         manifest = write_indexes(
             snapshot,

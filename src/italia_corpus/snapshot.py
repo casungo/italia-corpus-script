@@ -102,7 +102,8 @@ def _allowed_error_indexes(rows: list[dict], errors: list) -> set[int]:
 
 
 def validate_report(report: ConversionReport, previous: dict | None = None,
-                    exceptions_path: Path | None = None) -> None:
+                    exceptions_path: Path | None = None,
+                    fallback_active: bool = False) -> None:
     allowed = _allowed_regressions(exceptions_path)
     failures: list[str] = []
     allowed_error_indexes = _allowed_error_indexes(allowed, report.errors)
@@ -124,13 +125,17 @@ def validate_report(report: ConversionReport, previous: dict | None = None,
         failures.append("empty corpus")
     if previous:
         old = previous.get("counts", {})
+        # con fallback attivi i totali riflettono i contenuti congelati, non una perdita:
+        # i controlli di regressione totale restano attivi solo nei run senza fallback
         checks = {
             "acts": (report.converted, int(old.get("acts", 0))),
             "articles": (report.articles, int(old.get("articles", 0))),
             "internal_links": (report.internal_links, int(old.get("internal_links", 0))),
         }
         for metric, (new, prior) in checks.items():
-            if new < prior and not _is_allowed(allowed, metric, "*", new):
+            if new < prior and not fallback_active and not _is_allowed(
+                allowed, metric, "*", new
+            ):
                 failures.append(f"{metric} regressed from {prior} to {new}")
         prior_external = int(old.get("external_links", 0))
         external_growth = report.external_links - prior_external
@@ -138,6 +143,7 @@ def validate_report(report: ConversionReport, previous: dict | None = None,
         if (
             external_growth > 0
             and internal_growth < external_growth
+            and not fallback_active
             and not _is_allowed(allowed, "external_links", "*", report.external_links)
         ):
             failures.append(
