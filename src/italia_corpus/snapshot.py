@@ -200,8 +200,10 @@ def write_indexes(output: Path, candidates: list[Candidate], report: ConversionR
                   collections_requested: int, collections_downloaded: int,
                   known_gaps: list[str] | None = None,
                   memberships: dict[str, set[str]] | None = None,
-                  fallbacks: list[dict] | None = None) -> dict:
+                  fallbacks: list[dict] | None = None,
+                  carried_index: dict[str, dict[str, str]] | None = None) -> dict:
     memberships = memberships or {}
+    carried_index = carried_index or {}
     type_counts: Counter[str] = Counter()
     year_counts: Counter[str] = Counter()
     urn_index: dict[str, dict[str, str]] = {}
@@ -219,6 +221,12 @@ def write_indexes(output: Path, candidates: list[Candidate], report: ConversionR
             "path": candidate.repo_path,
             "urn": urn,
         })
+    # gli atti carried (collezioni in fallback) sono cittadini di primo livello dell'indice:
+    # senza questo merge sparirebbero dall'urn-index e il run successivo non li porterebbe mai piu'
+    for urn, entry in carried_index.items():
+        codice = re.sub(r"-[0-9a-f]{12}$", "", Path(entry["path"]).stem)
+        urn_index.setdefault(urn, {"path": entry["path"], "codice_redazionale": codice})
+        code_index.setdefault(codice, []).append({"path": entry["path"], "urn": urn})
     collections_dir = output / "collections"
     collections_dir.mkdir(exist_ok=True)
     for name, urns in sorted(memberships.items()):

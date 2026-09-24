@@ -1209,3 +1209,16 @@ def test_fallback_detection_keeps_collections_that_only_grow(tmp_path: Path) -> 
         candidates_by_urn, previous, source_dir
     )
     assert fallbacks == [] and per_collection == {"Bench": 2}
+
+
+def test_write_indexes_merges_carried_acts(tmp_path: Path) -> None:
+    report = ConversionReport()
+    manifest = write_indexes(
+        tmp_path, [], report, 1, 1,
+        carried_index={"urn:carried": {"path": "atti/098G0401.md"}},
+    )
+    assert manifest["fallbacks"] == []
+    urn_index = json.loads((tmp_path / "urn-index.json").read_text(encoding="utf-8"))
+    assert urn_index["documents"]["urn:carried"]["path"] == "atti/098G0401.md"
+    assert urn_index["documents"]["urn:carried"]["codice_redazionale"] == "098G0401"
+    assert urn_index["by_codice_redazionale"]["098G0401"][0]["urn"] == "urn:carried"

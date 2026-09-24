@@ -654,9 +654,11 @@ def _carry_previous_collection(
     carried_internal = 0
     carried_external = 0
     carried_acts = 0
+    missing_index_entries = 0
     for urn in membership:
         entry = documents.get(urn)
         if not entry:
+            missing_index_entries += 1
             continue
         path = entry["path"]
         source = source_dir / path
@@ -683,6 +685,11 @@ def _carry_previous_collection(
         memberships.setdefault(collection, set()).add(urn)
         carried_acts += 1
     carried.update(acts=carried_acts, internal_links=carried_internal, external_links=carried_external)
+    if missing_index_entries:
+        logger.warning(
+            "FALLBACK %s: %d previous urns have no urn-index entry and were skipped",
+            collection, missing_index_entries,
+        )
     previous_counts = previous.get("by_collection", {}).get(collection, {})
     current_counts = dict(report.collections.get(collection, {}))
     current_counts["converted"] = int(previous_counts.get("converted", carried_acts))
@@ -983,6 +990,7 @@ def extract_and_push(
             known_gaps,
             memberships,
             fallbacks,
+            {urn: {"path": path} for urn, path in carried_index.items()},
         )
         write_delta(previous, manifest, snapshot)
         artifacts = build_artifacts(snapshot, root / "artifacts")
