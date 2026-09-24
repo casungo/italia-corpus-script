@@ -604,18 +604,31 @@ def _stage_release(repo, tag: str, artifacts: list[Path]):
 
 
 def _detect_collection_fallbacks(
-    candidates_by_urn: dict[str, Candidate], previous: dict | None
+    candidates_by_urn: dict[str, Candidate],
+    previous: dict,
+    source_dir: Path,
 ) -> tuple[list[str], dict[str, int]]:
-    """Collections whose distinct-URN coverage regressed vs the published snapshot."""
+    """Collections whose coverage regressed vs the published snapshot.
+
+    Two regression shapes: fewer distinct URNs than published (collapse), or acts
+    missing from the new edition (upstream switched package contents, es. V -> O).
+    """
+    current_urns: dict[str, set[str]] = {}
     per_collection: dict[str, int] = {}
     for candidate in candidates_by_urn.values():
+        current_urns.setdefault(candidate.collection, set()).add(candidate.metadata.urn or "")
         per_collection[candidate.collection] = per_collection.get(candidate.collection, 0) + 1
-    if not previous:
-        return [], per_collection
     fallbacks = []
     for collection, counts in previous.get("by_collection", {}).items():
         prior = int(counts.get("converted", 0))
-        if prior > 0 and per_collection.get(collection, 0) < prior:
+        collapsed = per_collection.get(collection, 0) < prior
+        slug = "-".join(collection.casefold().split())
+        membership = source_dir / "collections" / f"{slug}.json"
+        lost_acts = False
+        if membership.is_file():
+            published_urns = set(json.loads(membership.read_text(encoding="utf-8"))["urns"])
+            lost_acts = bool(published_urns - current_urns.get(collection, set()))
+        if prior > 0 and (collapsed or lost_acts):
             fallbacks.append(collection)
     return sorted(fallbacks), per_collection
 
@@ -936,7 +949,7 @@ def extract_and_push(
         per_collection_urns: dict[str, int] = {}
         if previous is not None:
             fallback_collections, per_collection_urns = _detect_collection_fallbacks(
-                candidates_by_urn, previous
+                candidates_by_urn, previous, baseline or clone
             )
             for name in fallback_collections:
                 for urn in [u for u, c in candidates_by_urn.items() if c.collection == name]:

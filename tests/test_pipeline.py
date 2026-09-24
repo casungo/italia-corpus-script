@@ -1144,7 +1144,7 @@ def test_fallback_detection_and_carry(tmp_path: Path, monkeypatch) -> None:
     candidates_by_urn = {"urn:a": candidate_a}
 
     fallbacks, per_collection = pipeline._detect_collection_fallbacks(
-        candidates_by_urn, previous
+        candidates_by_urn, previous, source_dir
     )
     assert fallbacks == ["Bench"] and per_collection == {"Bench": 1}
 
@@ -1172,3 +1172,40 @@ def test_write_indexes_records_fallbacks(tmp_path: Path) -> None:
         {"collection": "Bench", "acts": 1}
     ])
     assert manifest["fallbacks"] == [{"collection": "Bench", "acts": 1}]
+
+
+def test_fallback_detection_keeps_collections_that_only_grow(tmp_path: Path) -> None:
+    source_dir = tmp_path / "previous"
+    (source_dir / "collections").mkdir(parents=True)
+    (source_dir / "collections" / "bench.json").write_text(json.dumps(
+        {"schema_version": SCHEMA_VERSION, "name": "Bench", "urns": ["urn:a"]}), encoding="utf-8")
+    previous = {"by_collection": {"Bench": {"converted": 1, "articles": 1}}}
+    # stessa urna piu' una nuova: nessuna perdita, nessun fallback
+    candidates_by_urn = {
+        "urn:a": replace(
+            discover_candidate(
+                "Bench", "V", "bench/a.xml",
+                (FIXTURES / "codice_penale.xml").read_bytes(), ConversionReport(),
+            ), collection="Bench", metadata=replace(
+                discover_candidate(
+                    "Bench", "V", "bench/a.xml",
+                    (FIXTURES / "codice_penale.xml").read_bytes(), ConversionReport(),
+                ).metadata, urn="urn:a",
+            ),
+        ),
+        "urn:new": replace(
+            discover_candidate(
+                "Bench", "V", "bench/new.xml",
+                (FIXTURES / "codice_civile.xml").read_bytes(), ConversionReport(),
+            ), collection="Bench", metadata=replace(
+                discover_candidate(
+                    "Bench", "V", "bench/new.xml",
+                    (FIXTURES / "codice_civile.xml").read_bytes(), ConversionReport(),
+                ).metadata, urn="urn:new",
+            ),
+        ),
+    }
+    fallbacks, per_collection = pipeline._detect_collection_fallbacks(
+        candidates_by_urn, previous, source_dir
+    )
+    assert fallbacks == [] and per_collection == {"Bench": 2}
