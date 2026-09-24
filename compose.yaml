@@ -3,6 +3,8 @@ services:
     build: .
     init: true
     restart: unless-stopped
+    # i full run sono CPU-bound (discovery + rendering): il tappo lascia responsivo il resto
+    cpus: 2.5
     env_file: ${ITALIA_CORPUS_ENV_FILE:-.env}
     volumes:
       - ${ITALIA_CORPUS_DATA_DIR:-./data}:/data
