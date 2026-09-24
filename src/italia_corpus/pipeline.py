@@ -674,7 +674,6 @@ def _carry_previous_collection(
                 continue
         else:
             path = entry["path"]
-        path = entry["path"]
         source = source_dir / path
         if not source.is_file():
             continue
