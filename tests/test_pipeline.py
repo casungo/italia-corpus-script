@@ -1153,7 +1153,8 @@ def test_fallback_detection_and_carry(tmp_path: Path, monkeypatch) -> None:
     carried_index: dict[str, str] = {}
     memberships: dict[str, set[str]] = {}
     info = pipeline._carry_previous_collection(
-        source_dir, "Bench", snapshot, report, previous, carried_index, memberships
+        source_dir, "Bench", snapshot, report, previous, carried_index, memberships,
+        skip_urns=set(),
     )
     assert info["acts"] == 2
     assert (snapshot / "atti" / "a.md").is_file()
@@ -1222,3 +1223,19 @@ def test_write_indexes_merges_carried_acts(tmp_path: Path) -> None:
     assert urn_index["documents"]["urn:carried"]["path"] == "atti/098G0401.md"
     assert urn_index["documents"]["urn:carried"]["codice_redazionale"] == "098G0401"
     assert urn_index["by_codice_redazionale"]["098G0401"][0]["urn"] == "urn:carried"
+
+
+def test_carry_skips_urns_the_current_render_already_covers(tmp_path: Path, monkeypatch) -> None:
+    source_dir, previous = _previous_snapshot_fixture(tmp_path)
+    report = ConversionReport()
+    snapshot = tmp_path / "snapshot"
+    carried_index: dict[str, str] = {}
+    memberships: dict[str, set[str]] = {}
+    info = pipeline._carry_previous_collection(
+        source_dir, "Bench", snapshot, report, previous, carried_index, memberships,
+        skip_urns={"urn:a"},
+    )
+    assert info["acts"] == 1
+    assert carried_index == {"urn:b": "atti/b.md"}
+    assert (snapshot / "atti" / "b.md").is_file()
+    assert not (snapshot / "atti" / "a.md").exists()

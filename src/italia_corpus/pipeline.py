@@ -641,6 +641,7 @@ def _carry_previous_collection(
     previous: dict,
     carried_index: dict[str, str],
     memberships: dict[str, set[str]],
+    skip_urns: set[str],
 ) -> dict:
     """Freeze a regressed collection at its published content and account for it in the report."""
     slug = "-".join(collection.casefold().split())
@@ -657,6 +658,10 @@ def _carry_previous_collection(
     missing_index_entries = 0
     frontmatter_map: dict[str, str] | None = None
     for urn in membership:
+        if urn in skip_urns:
+            # l'atto esiste gia' nel render corrente (e' cambiato di collezione a monte):
+            # vince la versione fresca, il carry non deve duplicarlo in sqlite
+            continue
         entry = documents.get(urn)
         if not entry:
             # recupero: l'urn-index pubblicato puo' non contenere gli atti carried da un
@@ -976,7 +981,7 @@ def extract_and_push(
                     del candidates_by_urn[urn]
                 info = _carry_previous_collection(
                     baseline or clone, name, root / "snapshot", report, previous,
-                    carried_index, memberships,
+                    carried_index, memberships, set(candidates_by_urn),
                 )
                 fallbacks.append(info)
                 logger.error(
